@@ -17,6 +17,7 @@ config/icon="res://icon.svg"
 
 [autoload]
 
+MapRegistry="*res://game/map_registry.gd"
 Server="*res://server/server.tscn"
 
 [display]

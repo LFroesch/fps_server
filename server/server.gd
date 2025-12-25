@@ -43,13 +43,8 @@ func remove_client_from_lobby(client_id : int) -> void:
 	
 	if maybe_lobby:
 		maybe_lobby.remove_client(client_id)
-		
-		lobby_clients_updated(maybe_lobby)
-		
-		if maybe_lobby.client_data.keys().is_empty():
-			delete_lobby(maybe_lobby)
-	
-	#print("%s Client (%d) Disconnected from Lobby (%s)" % [_get_time_string(), client_id, maybe_lobby.name])
+		if is_instance_valid(maybe_lobby):
+			lobby_clients_updated(maybe_lobby)
 
 func update_lobby_spots() -> void:
 	# Inserting new lobbies
@@ -73,24 +68,51 @@ func get_lobby_from_client_id(id : int) -> Lobby:
 	return null
 
 @rpc("any_peer", "call_remote", "reliable")
-func c_try_connect_client_to_lobby(player_name : String) -> void:
+func c_try_connect_client_to_lobby(player_name : String, map_id : int, game_mode : int = MapRegistry.GameMode.PVP) -> void:
 	var client_id := multiplayer.get_remote_sender_id()
-	var maybe_lobby := get_non_full_lobby()
-	
+	var maybe_lobby := get_non_full_lobby(map_id, game_mode)
+
 	if maybe_lobby:
+		# Double-check: Verify lobby is still valid before adding client
+		if maybe_lobby.status != Lobby.IDLE or maybe_lobby.being_deleted:
+			s_client_cant_connect_to_lobby.rpc_id(client_id)
+			return
+
 		maybe_lobby.add_client(client_id, player_name)
+
+		# Double-check: Verify lobby still exists after adding client
+		if not is_instance_valid(maybe_lobby) or maybe_lobby.being_deleted:
+			# Lobby was deleted during add, rollback
+			idle_clients.erase(client_id)
+			s_client_cant_connect_to_lobby.rpc_id(client_id)
+			return
+
 		idle_clients.erase(client_id)
 		lobby_clients_updated(maybe_lobby)
-		
+
 		if maybe_lobby.client_data.keys().size() >= MAX_PLAYERS_PER_LOBBY:
 			lock_lobby(maybe_lobby)
-		
-		print("%s Client (%d) Connected to Lobby (%s)" % [_get_time_string(), client_id, maybe_lobby.name])
+
+		print("%s Client (%d) Connected to Lobby (%s) for Map: %s" % [_get_time_string(), client_id, maybe_lobby.name, MapRegistry.get_map_name(map_id)])
 		return
-		
+
 	s_client_cant_connect_to_lobby.rpc_id(client_id)
 
 func lock_lobby(lobby : Lobby) -> void:
+	# Verify we still have enough connected players before locking
+	var connected_count := 0
+	for data in lobby.client_data.values():
+		if data.connected:
+			connected_count += 1
+
+	if connected_count < MAX_PLAYERS_PER_LOBBY:
+		# Not enough players, revert to IDLE or delete if empty
+		if connected_count == 0:
+			lobby.maybe_delete_empty_lobby()
+		else:
+			lobby.status = Lobby.IDLE
+		return
+
 	lobby.status = Lobby.LOCKED
 	create_lobby_on_clients(lobby)
 
@@ -103,23 +125,58 @@ func create_lobby_on_clients(lobby : Lobby) -> void:
 func s_create_lobby_on_clients(lobby_name: String) -> void:
 	pass
 
-func get_non_full_lobby() -> Lobby:
-	for lobby in lobbies:
-		if lobby.status != Lobby.IDLE:
-			continue
-		if lobby.client_data.keys().size() < MAX_PLAYERS_PER_LOBBY:
-			return lobby
+func get_non_full_lobby(map_id : int, game_mode : int) -> Lobby:
+	# If "Any Map" (-1), try to backfill any non-full lobby
+	if map_id == MapRegistry.ANY_MAP:
+		for lobby in lobbies:
+			if lobby.status != Lobby.IDLE:
+				continue
+			if lobby.being_deleted:
+				continue
+			if lobby.game_mode != game_mode:
+				continue
+			if lobby.client_data.keys().size() < MAX_PLAYERS_PER_LOBBY:
+				return lobby
+	else:
+		# Look for lobbies matching the specific map and game mode
+		for lobby in lobbies:
+			if lobby.status != Lobby.IDLE:
+				continue
+			if lobby.being_deleted:
+				continue
+			if lobby.map_id != map_id:
+				continue
+			if lobby.game_mode != game_mode:
+				continue
+			if lobby.client_data.keys().size() < MAX_PLAYERS_PER_LOBBY:
+				return lobby
+
+	# Create new lobby if we have space
 	if lobbies.size() < MAX_LOBBIES:
 		var new_lobby := Lobby.new()
 		lobbies.append(new_lobby)
 		new_lobby.name = str(new_lobby.get_instance_id())
+		new_lobby.game_mode = game_mode
+		# Randomly select a map if "Any" was chosen
+		if map_id == MapRegistry.ANY_MAP:
+			var available_maps := MapRegistry.get_all_map_ids()
+			new_lobby.map_id = available_maps.pick_random()
+		else:
+			new_lobby.map_id = map_id
 		add_child(new_lobby)
 		update_lobby_spots()
+		var mode_name := "PvP" if game_mode == MapRegistry.GameMode.PVP else "Zombies"
+		print("%s Created new lobby for Map: %s (%s mode)" % [_get_time_string(), MapRegistry.get_map_name(new_lobby.map_id), mode_name])
 		return new_lobby
+
 	print("%s Lobbies Full" % _get_time_string())
 	return null
 
 func lobby_clients_updated(lobby : Lobby) -> void:
+	# Check if lobby is still valid before sending updates
+	if not is_instance_valid(lobby) or lobby.being_deleted:
+		return
+
 	for client_id in lobby.client_data.keys():
 		s_lobby_clients_updated.rpc_id(client_id, lobby.client_data.keys().size(), MAX_PLAYERS_PER_LOBBY)
 
@@ -149,6 +206,7 @@ func s_return_server_clock_time(server_clock_time : int, old_client_clock_time :
 	pass
 
 func delete_lobby(lobby : Lobby) -> void:
+	print("%s Deleted lobby for Map: %s" % [_get_time_string(), MapRegistry.get_map_name(lobby.map_id)])
 	lobbies.erase(lobby)
 	lobby.queue_free()
 	update_lobby_spots()

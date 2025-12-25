@@ -30,7 +30,7 @@ func update_body_geometry(player_data : Dictionary) -> void:
 	position = player_data.pos
 	rotation.y = player_data.rot_y
 	head.rotation.x = player_data.rot_x
-	
+
 	if player_data.has("anim_pos"):
 		set_anim(player_data.anim, player_data.anim_pos)
 	set_rot_x_visuals(player_data.rot_x)

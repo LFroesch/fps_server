@@ -1,9 +1,30 @@
-[gd_scene format=3 uid="uid://dhycvx2wpe3pu"]
+[gd_scene load_steps=2 format=3 uid="uid://dhycvx2wpe3pu"]
+
+[ext_resource type="Script" uid="uid://cc13fj1b1crl5" path="res://game/server_status_texts.gd" id="1_3fham"]
 
 [node name="MainGame" type="Node"]
 
 [node name="Camera3D" type="Camera3D" parent="."]
 
-[node name="Label3D" type="Label3D" parent="Camera3D"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, -1.4312)
+[node name="ServerStatusTexts" type="Node3D" parent="Camera3D"]
+script = ExtResource("1_3fham")
+
+[node name="ServerStatusLabel" type="Label3D" parent="Camera3D/ServerStatusTexts"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.4, -2)
 text = "Server Status : ON"
+
+[node name="ConnectedPlayersLabel" type="Label3D" parent="Camera3D/ServerStatusTexts"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.4, -2)
+text = "Connected Players:"
+
+[node name="ServerVersionLabel" type="Label3D" parent="Camera3D/ServerStatusTexts"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.2, -2)
+text = "Server Version:"
+
+[node name="PortLabel" type="Label3D" parent="Camera3D/ServerStatusTexts"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, -2)
+text = "Port:"
+
+[node name="AddressLabel" type="Label3D" parent="Camera3D/ServerStatusTexts"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.2, -2)
+text = "Address:"
