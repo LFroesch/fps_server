@@ -96,10 +96,10 @@ func _ready() -> void:
 	if navigation_agent:
 		navigation_agent.radius = 0.3  # Small enough for doorways
 		navigation_agent.height = 1.8
-		navigation_agent.path_desired_distance = 0.5
-		navigation_agent.target_desired_distance = 0.5
+		navigation_agent.path_desired_distance = 1.0
+		navigation_agent.target_desired_distance = 0.8
 		navigation_agent.path_max_distance = 15.0  # Give up if path is this far
-		navigation_agent.path_postprocessing = NavigationPathQueryParameters3D.PATH_POSTPROCESSING_CORRIDORFUNNEL
+		navigation_agent.path_postprocessing = NavigationPathQueryParameters3D.PATH_POSTPROCESSING_EDGECENTERED
 		navigation_agent.avoidance_enabled = false
 		navigation_agent.velocity_computed.connect(_on_velocity_computed)
 

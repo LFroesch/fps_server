@@ -1188,22 +1188,34 @@ var door_costs = {
 	"door_mystery_box": 1000
 }
 
+var perk_costs = {
+	"CombatMedic": 1500,
+	"Marksman": 1500,
+	"RapidFire": 2000,
+	"Endurance": 2000,
+	"TacticalVest": 2500,
+	"BlastShield": 2500,
+	"FastHands": 3000,
+	"HeavyGunner": 4000
+}
+
 var opened_doors: Dictionary = {}
+var weapon_upgrade_cost: int = 5000
 
 @rpc("any_peer", "call_remote", "reliable")
-func c_try_buy_weapon(weapon_id: int) -> void:
+func c_try_buy_weapon(weapon_id: int, is_ammo: bool = false) -> void:
 	var peer_id = multiplayer.get_remote_sender_id()
-	
+
 	if not client_data.has(peer_id):
 		return
-	
+
 	var player_points = client_data[peer_id].points
-	
+
 	# Check if player already has this weapon in their inventory
 	var has_weapon = false
 	if client_data[peer_id].has("weapons"):
 		has_weapon = weapon_id in client_data[peer_id].weapons
-	
+
 	var cost = ammo_costs.get(weapon_id, 500) if has_weapon else weapon_costs.get(weapon_id, 1000)
 	
 	if player_points < cost:
@@ -1267,6 +1279,84 @@ func c_try_buy_door(door_id: String) -> void:
 	
 	print("%s Player %d opened door %s for %d points (now has %d points)" % [_get_time_string(), peer_id, door_id, cost, client_data[peer_id].points])
 
+@rpc("any_peer", "call_remote", "reliable")
+func c_try_upgrade_weapon(weapon_id: int) -> void:
+	var peer_id = multiplayer.get_remote_sender_id()
+
+	if not client_data.has(peer_id):
+		return
+
+	# Check if player has enough points
+	var player_points = client_data[peer_id].points
+	if player_points < weapon_upgrade_cost:
+		s_purchase_failed.rpc_id(peer_id, "Not enough points for upgrade!")
+		print("%s Player %d tried to upgrade weapon %d but only has %d points (needs %d)" % [_get_time_string(), peer_id, weapon_id, player_points, weapon_upgrade_cost])
+		return
+
+	# Check if weapon is already upgraded
+	if not client_data[peer_id].has("upgraded_weapons"):
+		client_data[peer_id].upgraded_weapons = []
+
+	if weapon_id in client_data[peer_id].upgraded_weapons:
+		s_purchase_failed.rpc_id(peer_id, "Weapon already upgraded!")
+		print("%s Player %d tried to upgrade weapon %d but it's already upgraded" % [_get_time_string(), peer_id, weapon_id])
+		return
+
+	# Deduct points
+	client_data[peer_id].points -= weapon_upgrade_cost
+
+	# Mark weapon as upgraded
+	client_data[peer_id].upgraded_weapons.append(weapon_id)
+
+	# Notify client
+	s_weapon_upgraded.rpc_id(peer_id, weapon_id)
+	s_update_player_points.rpc_id(peer_id, client_data[peer_id].points)
+
+	print("%s Player %d upgraded weapon %d for %d points (now has %d points)" % [_get_time_string(), peer_id, weapon_id, weapon_upgrade_cost, client_data[peer_id].points])
+
+@rpc("any_peer", "call_remote", "reliable")
+func c_try_buy_perk(perk_type: String) -> void:
+	var peer_id = multiplayer.get_remote_sender_id()
+
+	if not client_data.has(peer_id):
+		return
+
+	# Check if perk exists
+	if not perk_costs.has(perk_type):
+		s_purchase_failed.rpc_id(peer_id, "Invalid perk type!")
+		print("%s Player %d requested invalid perk: %s" % [_get_time_string(), peer_id, perk_type])
+		return
+
+	# Initialize perks array if needed
+	if not client_data[peer_id].has("perks"):
+		client_data[peer_id].perks = []
+
+	# Check if player already has this perk
+	if perk_type in client_data[peer_id].perks:
+		s_purchase_failed.rpc_id(peer_id, "You already have this perk!")
+		print("%s Player %d already has perk: %s" % [_get_time_string(), peer_id, perk_type])
+		return
+
+	# Check if player has enough points
+	var cost = perk_costs[perk_type]
+	var player_points = client_data[peer_id].points
+	if player_points < cost:
+		s_purchase_failed.rpc_id(peer_id, "Not enough points!")
+		print("%s Player %d tried to buy perk %s but only has %d points (needs %d)" % [_get_time_string(), peer_id, perk_type, player_points, cost])
+		return
+
+	# Deduct points
+	client_data[peer_id].points -= cost
+
+	# Add perk to player
+	client_data[peer_id].perks.append(perk_type)
+
+	# Notify client
+	s_perk_purchased.rpc_id(peer_id, perk_type)
+	s_update_player_points.rpc_id(peer_id, client_data[peer_id].points)
+
+	print("%s Player %d bought perk %s for %d points (now has %d points, %d perks)" % [_get_time_string(), peer_id, perk_type, cost, client_data[peer_id].points, client_data[peer_id].perks.size()])
+
 @rpc("authority", "call_remote", "reliable")
 func s_weapon_purchased(weapon_id: int, is_ammo: bool) -> void:
 	pass
@@ -1277,6 +1367,14 @@ func s_door_opened(door_id: String) -> void:
 
 @rpc("authority", "call_remote", "reliable")
 func s_purchase_failed(reason: String) -> void:
+	pass
+
+@rpc("authority", "call_remote", "reliable")
+func s_weapon_upgraded(weapon_id: int) -> void:
+	pass
+
+@rpc("authority", "call_remote", "reliable")
+func s_perk_purchased(perk_type: String) -> void:
 	pass
 
 # Called after door purchase - opens door on server
