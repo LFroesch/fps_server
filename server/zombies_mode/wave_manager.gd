@@ -70,6 +70,12 @@ func start_next_wave() -> void:
 	spawn_timer.start()
 	_on_spawn_timer_timeout()  # Spawn first zombie immediately
 
+func respawn_waiting_players() -> void:
+	for player_data in lobby.server_players.values():
+		var player : PlayerServerReal = player_data.real
+		if is_instance_valid(player) and player.is_waiting_for_respawn:
+			player.respawn_for_new_round()
+
 func _on_spawn_timer_timeout() -> void:
 	if zombies_to_spawn > 0:
 		spawn_zombie()
@@ -139,6 +145,9 @@ func complete_wave() -> void:
 	# Notify clients of wave completion and break time
 	for client_id in lobby.get_connected_clients():
 		lobby.s_wave_complete.rpc_id(client_id, current_wave)
+
+	# Respawn any players waiting from previous round (at countdown start instead of wave start)
+	respawn_waiting_players()
 
 	# Start break timer
 	break_timer.wait_time = WAVE_BREAK_TIME

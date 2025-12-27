@@ -341,7 +341,7 @@ func spawn_players_zombies_mode() -> void:
 				spawn_tform,
 				team,
 				client_data.get(ready_clients[i]).display_name,
-				client_data.get(ready_clients[i]).weapon_id,
+				0,  # Force pistol (weapon_id = 0) in zombie mode
 				true
 			)
 
@@ -747,6 +747,12 @@ func end_match() -> void:
 	match_timer.stop()
 	set_physics_process(false)
 
+	print("=== END MATCH ===")
+	print("Game mode: ", game_mode)
+	for client_id in client_data.keys():
+		var data = client_data[client_id]
+		print("Player ", client_id, " (", data.get("display_name", "?"), "): Points=", data.get("points", 0), " Kills=", data.get("kills", 0), " Deaths=", data.get("deaths", 0))
+
 	for client_id in get_connected_clients():
 		s_end_match.rpc_id(client_id, client_data, game_mode)
 
@@ -870,7 +876,10 @@ func zombie_died(zombie_id : int, killer_id : int, zombie_type : int, death_posi
 	if client_data.has(killer_id):
 		client_data[killer_id].points += zombie_points
 		client_data[killer_id].kills += 1
+		print("Zombie killed by ", killer_id, " - points: ", client_data[killer_id].points, " kills: ", client_data[killer_id].kills)
 		s_update_player_points.rpc_id(killer_id, client_data[killer_id].points)
+	else:
+		print("WARNING: Zombie killer_id ", killer_id, " not in client_data!")
 
 		# Broadcast all player scores to all clients (for teammate cards)
 		update_all_player_scores()
@@ -947,21 +956,34 @@ func player_revived(player_id : int) -> void:
 	for client_id in get_connected_clients():
 		s_player_revived.rpc_id(client_id, player_id)
 
+func player_waiting_for_respawn(player_id : int) -> void:
+	print("Player ", player_id, " is waiting for next round")
+	for client_id in get_connected_clients():
+		s_player_waiting_for_respawn.rpc_id(client_id, player_id)
+
+	# Check if all players are dead/waiting
+	check_all_players_downed()
+
+func player_respawned(player_id : int) -> void:
+	print("Player ", player_id, " respawned")
+	for client_id in get_connected_clients():
+		s_player_respawned.rpc_id(client_id, player_id)
+
 func update_bleed_out_timer(player_id : int, time_remaining : float) -> void:
 	# Send to the downed player only (no need to spam everyone)
 	if get_connected_clients().has(player_id):
 		s_update_bleed_out_timer.rpc_id(player_id, time_remaining)
 
 func check_all_players_downed() -> void:
-	var all_downed := true
+	var all_downed_or_waiting := true
 	for player_data in server_players.values():
 		var player : PlayerServerReal = player_data.real
-		if is_instance_valid(player) and not player.is_downed:
-			all_downed = false
+		if is_instance_valid(player) and not player.is_downed and not player.is_waiting_for_respawn:
+			all_downed_or_waiting = false
 			break
 
-	if all_downed:
-		print("All players downed - Game Over!")
+	if all_downed_or_waiting:
+		print("All players downed or dead - Game Over!")
 		end_zombies_match()
 
 func end_zombies_match() -> void:
@@ -1040,12 +1062,53 @@ func c_cancel_revive(target_player_id : int) -> void:
 		if is_instance_valid(target):
 			target.stop_being_revived()
 
+# Debug RPCs (zombies mode only)
+@rpc("any_peer", "call_remote", "reliable")
+func c_debug_add_points(amount : int) -> void:
+	if game_mode != 1:  # Only in zombies mode
+		return
+	var client_id := multiplayer.get_remote_sender_id()
+	if client_data.has(client_id):
+		client_data[client_id].points += amount
+		s_update_player_points.rpc_id(client_id, client_data[client_id].points)
+		print("DEBUG: Added ", amount, " points to player ", client_id)
+
+@rpc("any_peer", "call_remote", "reliable")
+func c_debug_damage_or_kill(damage : int) -> void:
+	if game_mode != 1:  # Only in zombies mode
+		return
+	var client_id := multiplayer.get_remote_sender_id()
+	if server_players.has(client_id):
+		var player : PlayerServerReal = server_players.get(client_id).real
+		if is_instance_valid(player):
+			# If downed, force death
+			if player.is_downed:
+				print("DEBUG: Forcing downed player ", client_id, " to die")
+				player.bleed_out_timer = 0
+				player.die(0)
+			# If health would drop below 0, kill instantly
+			elif player.current_health <= damage:
+				print("DEBUG: Killing player ", client_id, " instantly")
+				player.change_health(-player.current_health, 0)
+			# Otherwise just deal damage
+			else:
+				print("DEBUG: Dealing ", damage, " damage to player ", client_id)
+				player.change_health(-damage, 0)
+
 @rpc("authority", "call_remote", "reliable")
 func s_player_downed(player_id : int, damager_id : int) -> void:
 	pass
 
 @rpc("authority", "call_remote", "reliable")
 func s_player_revived(player_id : int) -> void:
+	pass
+
+@rpc("authority", "call_remote", "reliable")
+func s_player_waiting_for_respawn(player_id : int) -> void:
+	pass
+
+@rpc("authority", "call_remote", "reliable")
+func s_player_respawned(player_id : int) -> void:
 	pass
 
 @rpc("authority", "call_remote", "reliable")

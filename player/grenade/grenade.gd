@@ -43,17 +43,38 @@ func _on_self_destruct_timer_timeout() -> void:
 	explode()
 	
 func explode() -> void:
-	for player in explosion_damage_area.get_overlapping_bodies():
-		var hurt_player_id := player.name.to_int()
-		if lobby.client_data.get(thrower_id).team == lobby.client_data.get(hurt_player_id).team and thrower_id != hurt_player_id:
-			continue
-		var damage := max_damage - remap(
-			global_position.distance_to(player.global_position + Vector3.UP * 0.8),
-			0,
-			damage_radius,
-			0,
-			max_damage
-		)
-		player.change_health(-damage, thrower_id)
-		
+	var bodies = explosion_damage_area.get_overlapping_bodies()
+	print("Grenade exploded at ", global_position, " - detected ", bodies.size(), " bodies")
+	for body in bodies:
+		print("  Body: ", body.name, " class: ", body.get_class())
+		# Check if it's a player
+		if body is PlayerServerReal:
+			var player : PlayerServerReal = body
+			var hurt_player_id := player.name.to_int()
+			# Skip friendly fire (except self-damage)
+			if lobby.client_data.get(thrower_id).team == lobby.client_data.get(hurt_player_id).team and thrower_id != hurt_player_id:
+				continue
+			var damage := max_damage - remap(
+				global_position.distance_to(player.global_position + Vector3.UP * 0.8),
+				0,
+				damage_radius,
+				0,
+				max_damage
+			)
+			player.change_health(-damage, thrower_id)
+
+		# Check if it's a zombie
+		elif body is ZombieServer:
+			var zombie : ZombieServer = body
+			var distance = global_position.distance_to(zombie.global_position + Vector3.UP * 0.8)
+			var damage := max_damage - remap(
+				distance,
+				0,
+				damage_radius,
+				0,
+				max_damage
+			)
+			print("  -> Damaging zombie ", zombie.name, " for ", damage, " damage (distance: ", distance, ", thrower: ", thrower_id, ")")
+			zombie.change_health(-damage, thrower_id)
+
 	lobby.grenade_exploded(self)

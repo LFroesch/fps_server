@@ -282,8 +282,8 @@ func find_nearest_player() -> PlayerServerReal:
 		if not is_instance_valid(player):
 			continue
 
-		# Skip downed players
-		if player.is_downed:
+		# Skip downed or waiting players
+		if player.is_downed or player.is_waiting_for_respawn:
 			continue
 
 		var distance = global_position.distance_to(player.global_position)
@@ -300,8 +300,8 @@ func reevaluate_target() -> void:
 
 	var new_target := find_nearest_player()
 
-	# If current target is downed, immediately switch
-	if is_instance_valid(target_player) and target_player.is_downed:
+	# If current target is downed or waiting, immediately switch
+	if is_instance_valid(target_player) and (target_player.is_downed or target_player.is_waiting_for_respawn):
 		target_player = new_target
 		if target_player:
 			current_state = State.CHASE
@@ -309,14 +309,18 @@ func reevaluate_target() -> void:
 			current_state = State.IDLE
 		return
 
-	# Switch to closer target if significantly closer (more than 5 meters difference)
+	# Always switch to closer target (no threshold)
 	if new_target and is_instance_valid(target_player):
 		var current_distance := global_position.distance_to(target_player.global_position)
 		var new_distance := global_position.distance_to(new_target.global_position)
 
-		if new_distance < current_distance - 5.0:
+		if new_distance < current_distance:
 			target_player = new_target
 			current_state = State.CHASE
+	elif new_target:
+		# No current target, switch to new one
+		target_player = new_target
+		current_state = State.CHASE
 
 func attack_player() -> void:
 	if not is_instance_valid(target_player):
