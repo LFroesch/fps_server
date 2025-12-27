@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bq543wlkk5p5k"]
+
+[ext_resource type="Script" uid="uid://co6n7hobxmxhb" path="res://player/buyables/weapon_wallbuy_server.gd" id="1"]
+
+[node name="WeaponWallbuyServer" type="Node3D"]
+script = ExtResource("1")

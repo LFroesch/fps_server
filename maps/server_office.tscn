@@ -1,0 +1,169 @@
+[gd_scene load_steps=14 format=3 uid="uid://dfsvf8prcutds"]
+
+[ext_resource type="Script" uid="uid://dwqve5xxn68mx" path="res://player/spawn_point/player_spawn_point.gd" id="1_i2j3b"]
+[ext_resource type="PackedScene" uid="uid://b701rjdsnk1r1" path="res://ui/weapon_selection/weapon_selection_ui.tscn" id="2_g6d6w"]
+[ext_resource type="PackedScene" uid="uid://cj25o5j8n5gn0" path="res://ui/match_info/match_info_ui.tscn" id="3_smova"]
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_i2j3b"]
+size = Vector3(24, 0.237183, 18)
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_g6d6w"]
+size = Vector3(24, 0.237183, 8.66605)
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_smova"]
+size = Vector3(20.7993, 0.237, 0.321847)
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_5dus4"]
+size = Vector3(15.2546, 0.237, 3.05106)
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_jqkff"]
+size = Vector3(3.37305, 0.237, 1.26947)
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_aqgsc"]
+size = Vector3(2.53452, 0.174652, 1.47369)
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_23hqr"]
+size = Vector3(1.37681, 0.22142, 1.32868)
+
+[sub_resource type="WorldBoundaryShape3D" id="WorldBoundaryShape3D_towmr"]
+
+[sub_resource type="WorldBoundaryShape3D" id="WorldBoundaryShape3D_m24ny"]
+
+[sub_resource type="WorldBoundaryShape3D" id="WorldBoundaryShape3D_l1mhf"]
+
+[node name="Map" type="Node3D"]
+
+[node name="WeaponSelectionUI" parent="." instance=ExtResource("2_g6d6w")]
+
+[node name="MatchInfoUI" parent="." instance=ExtResource("3_smova")]
+
+[node name="PreviewCamera3D" type="Camera3D" parent="."]
+transform = Transform3D(-4.36335e-08, -0.783455, 0.621449, 2.60912e-09, 0.621449, 0.783455, -1, 3.58063e-08, -2.50718e-08, 14.0803, 16.5237, 0)
+
+[node name="SpawnPoints" type="Node3D" parent="."]
+
+[node name="RedPlayerSpawnPoint" type="Node3D" parent="SpawnPoints"]
+transform = Transform3D(-1, 0, 8.74228e-08, 0, 1, 0, -8.74228e-08, 0, -1, 5, 0, -45)
+script = ExtResource("1_i2j3b")
+metadata/_custom_type_script = "uid://dwqve5xxn68mx"
+
+[node name="RedPlayerSpawnPoint3" type="Node3D" parent="SpawnPoints"]
+transform = Transform3D(-1, 0, 8.74228e-08, 0, 1, 0, -8.74228e-08, 0, -1, 7, 0, -45)
+script = ExtResource("1_i2j3b")
+metadata/_custom_type_script = "uid://dwqve5xxn68mx"
+
+[node name="RedPlayerSpawnPoint4" type="Node3D" parent="SpawnPoints"]
+transform = Transform3D(-1, 0, 8.74228e-08, 0, 1, 0, -8.74228e-08, 0, -1, -7, 0, -45)
+script = ExtResource("1_i2j3b")
+metadata/_custom_type_script = "uid://dwqve5xxn68mx"
+
+[node name="RedPlayerSpawnPoint2" type="Node3D" parent="SpawnPoints"]
+transform = Transform3D(-1, 0, 8.74228e-08, 0, 1, 0, -8.74228e-08, 0, -1, -5, 0, -45)
+script = ExtResource("1_i2j3b")
+metadata/_custom_type_script = "uid://dwqve5xxn68mx"
+
+[node name="BluePlayerSpawnPoint5" type="Node3D" parent="SpawnPoints"]
+transform = Transform3D(1, 0, -1.74846e-07, 0, 1, 0, 1.74846e-07, 0, 1, -5, 0, 45)
+script = ExtResource("1_i2j3b")
+metadata/_custom_type_script = "uid://dwqve5xxn68mx"
+
+[node name="BluePlayerSpawnPoint6" type="Node3D" parent="SpawnPoints"]
+transform = Transform3D(1, 0, -1.74846e-07, 0, 1, 0, 1.74846e-07, 0, 1, 7, 0, 45)
+script = ExtResource("1_i2j3b")
+metadata/_custom_type_script = "uid://dwqve5xxn68mx"
+
+[node name="BluePlayerSpawnPoint7" type="Node3D" parent="SpawnPoints"]
+transform = Transform3D(1, 0, -1.74846e-07, 0, 1, 0, 1.74846e-07, 0, 1, 5, 0, 45)
+script = ExtResource("1_i2j3b")
+metadata/_custom_type_script = "uid://dwqve5xxn68mx"
+
+[node name="BluePlayerSpawnPoint8" type="Node3D" parent="SpawnPoints"]
+transform = Transform3D(1, 0, -1.74846e-07, 0, 1, 0, 1.74846e-07, 0, 1, -7, 0, 45)
+script = ExtResource("1_i2j3b")
+metadata/_custom_type_script = "uid://dwqve5xxn68mx"
+
+[node name="ExactCollisions" type="Node3D" parent="."]
+
+[node name="OfficeCollision" type="StaticBody3D" parent="ExactCollisions"]
+transform = Transform3D(2, 0, 0, 0, 2, 0, 0, 0, 2, 0, -0.3, 0)
+collision_layer = 17
+
+[node name="Floor" type="CollisionShape3D" parent="ExactCollisions/OfficeCollision"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.0482788, 0)
+shape = SubResource("BoxShape3D_i2j3b")
+
+[node name="2ndFloor" type="CollisionShape3D" parent="ExactCollisions/OfficeCollision"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 3.28127, -1.24849)
+shape = SubResource("BoxShape3D_g6d6w")
+
+[node name="2ndFloorFiller" type="CollisionShape3D" parent="ExactCollisions/OfficeCollision"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -1.50084, 3.281, -5.71499)
+shape = SubResource("BoxShape3D_smova")
+
+[node name="2ndFloorFiller2" type="CollisionShape3D" parent="ExactCollisions/OfficeCollision"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.2715, 3.281, -7.39401)
+shape = SubResource("BoxShape3D_5dus4")
+
+[node name="Stairs1" type="CollisionShape3D" parent="ExactCollisions/OfficeCollision"]
+transform = Transform3D(0.809673, 0.586881, 0, -0.586881, 0.809673, 0, 0, 0, 1, -9.23079, 0.619354, -8.26962)
+shape = SubResource("BoxShape3D_jqkff")
+
+[node name="Stairs2" type="CollisionShape3D" parent="ExactCollisions/OfficeCollision"]
+transform = Transform3D(-3.53919e-08, -2.56534e-08, 1, -0.68358, 0.729876, -5.4694e-09, -0.729876, -0.68358, -4.33678e-08, -11.1824, 2.48721, -6.74467)
+shape = SubResource("BoxShape3D_aqgsc")
+
+[node name="StairsMiddle1" type="CollisionShape3D" parent="ExactCollisions/OfficeCollision"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -11.2116, 1.58706, -8.24645)
+shape = SubResource("BoxShape3D_23hqr")
+
+[node name="Stairs3" type="CollisionShape3D" parent="ExactCollisions/OfficeCollision"]
+transform = Transform3D(-3.53919e-08, -2.56534e-08, -1, -0.586881, 0.809673, 0, 0.809673, 0.586881, -4.37114e-08, 11.3244, 0.619354, -6.30046)
+shape = SubResource("BoxShape3D_jqkff")
+
+[node name="Stairs4" type="CollisionShape3D" parent="ExactCollisions/OfficeCollision"]
+transform = Transform3D(0.729876, 0.68358, -3.4359e-10, -0.68358, 0.729876, -5.4694e-09, -3.488e-09, 4.22683e-09, 1, 9.7995, 2.48721, -8.25208)
+shape = SubResource("BoxShape3D_aqgsc")
+
+[node name="StairsMiddle2" type="CollisionShape3D" parent="ExactCollisions/OfficeCollision"]
+transform = Transform3D(-4.37114e-08, 0, -1, 0, 1, 0, 1, 0, -4.37114e-08, 11.3013, 1.58706, -8.28127)
+shape = SubResource("BoxShape3D_23hqr")
+
+[node name="PlayerBoundaries" type="Node3D" parent="."]
+
+[node name="WallNorth" type="StaticBody3D" parent="PlayerBoundaries"]
+transform = Transform3D(1, 0, 0, 0, -4.37114e-08, -1, 0, 1, -4.37114e-08, 0, 0, -50)
+collision_mask = 0
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="PlayerBoundaries/WallNorth"]
+shape = SubResource("WorldBoundaryShape3D_towmr")
+debug_color = Color(0.7, 0, 0, 0.42)
+
+[node name="WallSouth" type="StaticBody3D" parent="PlayerBoundaries"]
+transform = Transform3D(1, 0, 0, 0, -4.37114e-08, 1, 0, -1, -4.37114e-08, 0, 0, 50)
+collision_mask = 0
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="PlayerBoundaries/WallSouth"]
+shape = SubResource("WorldBoundaryShape3D_m24ny")
+debug_color = Color(0.7, 0, 0, 0.42)
+
+[node name="WallEast" type="StaticBody3D" parent="PlayerBoundaries"]
+transform = Transform3D(-4.37114e-08, -1, 0, 1, -4.37114e-08, 0, 0, 0, 1, 50, 0, 0)
+collision_mask = 0
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="PlayerBoundaries/WallEast"]
+shape = SubResource("WorldBoundaryShape3D_m24ny")
+debug_color = Color(0.7, 0, 0, 0.42)
+
+[node name="WallWest" type="StaticBody3D" parent="PlayerBoundaries"]
+transform = Transform3D(-4.37114e-08, 1, 0, -1, -4.37114e-08, 0, 0, 0, 1, -50, 0, 0)
+collision_mask = 0
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="PlayerBoundaries/WallWest"]
+shape = SubResource("WorldBoundaryShape3D_m24ny")
+debug_color = Color(0.7, 0, 0, 0.42)
+
+[node name="Ground" type="StaticBody3D" parent="PlayerBoundaries"]
+collision_mask = 0
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="PlayerBoundaries/Ground"]
+shape = SubResource("WorldBoundaryShape3D_l1mhf")

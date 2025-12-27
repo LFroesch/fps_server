@@ -168,21 +168,33 @@ func _safe_delete() -> void:
 @rpc("any_peer", "call_remote", "reliable")
 func c_lock_client() -> void:
 	var client_id := multiplayer.get_remote_sender_id()
+	print("%s [SERVER LOBBY] c_lock_client called by client %d" % [_get_time_string(), client_id])
+	print("%s [SERVER LOBBY] client_data.keys(): %s" % [_get_time_string(), str(client_data.keys())])
+	print("%s [SERVER LOBBY] ready_clients: %s" % [_get_time_string(), str(ready_clients)])
 	if not client_id in client_data.keys() or client_id in ready_clients:
+		print("%s [SERVER LOBBY] Client %d rejected (not in client_data or already ready)" % [_get_time_string(), client_id])
 		return
 	ready_clients.append(client_id)
 	waiting_players_ready = true
+	print("%s [SERVER LOBBY] Client %d marked as ready. Checking if all players ready..." % [_get_time_string(), client_id])
 	check_players_ready(start_loading_map)
 
 func check_players_ready(maybe_callable = null) -> void:
+	print("%s [SERVER LOBBY] check_players_ready called" % _get_time_string())
+	print("%s [SERVER LOBBY] waiting_players_ready: %s" % [_get_time_string(), str(waiting_players_ready)])
 	if not waiting_players_ready:
 		return
-	for maybe_ready_client in get_connected_clients():
+	var connected = get_connected_clients()
+	print("%s [SERVER LOBBY] Connected clients: %s" % [_get_time_string(), str(connected)])
+	print("%s [SERVER LOBBY] Ready clients: %s" % [_get_time_string(), str(ready_clients)])
+	for maybe_ready_client in connected:
 		if not maybe_ready_client in ready_clients:
+			print("%s [SERVER LOBBY] Still waiting for client %d" % [_get_time_string(), maybe_ready_client])
 			return
+	print("%s [SERVER LOBBY] All players ready! Calling start function..." % _get_time_string())
 	if maybe_callable is Callable:
 		callable_when_clients_ready = maybe_callable
-		
+
 	callable_when_clients_ready.call()
 	ready_clients.clear()
 	waiting_players_ready = false
@@ -1124,13 +1136,10 @@ func c_try_buy_weapon(weapon_id: int) -> void:
 	
 	var player_points = client_data[peer_id].points
 	
-	# Check if player already has this weapon
+	# Check if player already has this weapon in their inventory
 	var has_weapon = false
-	if server_players.has(peer_id):
-		var player_holder = server_players.get(peer_id).real
-		if is_instance_valid(player_holder):
-			# Check if player already owns this weapon (simplified - check weapon_id)
-			has_weapon = (client_data[peer_id].weapon_id == weapon_id)
+	if client_data[peer_id].has("weapons"):
+		has_weapon = weapon_id in client_data[peer_id].weapons
 	
 	var cost = ammo_costs.get(weapon_id, 500) if has_weapon else weapon_costs.get(weapon_id, 1000)
 	
@@ -1142,9 +1151,17 @@ func c_try_buy_weapon(weapon_id: int) -> void:
 	# Deduct points
 	client_data[peer_id].points -= cost
 	
-	# Update weapon if buying new one
+	# Update weapon inventory if buying new one
 	if not has_weapon:
-		client_data[peer_id].weapon_id = weapon_id
+		if not client_data[peer_id].has("weapons"):
+			client_data[peer_id].weapons = []
+		# Add to inventory (max 2 weapons)
+		if client_data[peer_id].weapons.size() < 2:
+			client_data[peer_id].weapons.append(weapon_id)
+		else:
+			# Replace the last weapon (client handles which one)
+			client_data[peer_id].weapons[-1] = weapon_id
+		print("%s Player %d inventory: %s" % [_get_time_string(), peer_id, str(client_data[peer_id].weapons)])
 	
 	# Send confirmation to client
 	s_weapon_purchased.rpc_id(peer_id, weapon_id, has_weapon)

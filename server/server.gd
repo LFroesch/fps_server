@@ -17,7 +17,7 @@ func _get_time_string() -> String:
 
 func _ready() -> void:
 	var error := peer.create_server(PORT, MAX_CLIENTS)
-	
+
 	if error != OK:
 		print("%s FPS Server Failed to Start" % _get_time_string())
 		return
@@ -99,13 +99,24 @@ func c_try_connect_client_to_lobby(player_name : String, map_id : int, game_mode
 	s_client_cant_connect_to_lobby.rpc_id(client_id)
 
 func lock_lobby(lobby : Lobby) -> void:
+	print("%s [LOCK_LOBBY] Attempting to lock lobby (%s)" % [_get_time_string(), lobby.name])
+	print("%s [LOCK_LOBBY] Total clients in lobby.client_data: %d" % [_get_time_string(), lobby.client_data.size()])
+	print("%s [LOCK_LOBBY] Connected peers: %s" % [_get_time_string(), str(multiplayer.get_peers())])
+
 	# Verify we still have enough connected players before locking
 	var connected_count := 0
-	for data in lobby.client_data.values():
-		if data.connected:
+	for client_id in lobby.client_data.keys():
+		var data = lobby.client_data[client_id]
+		var actually_connected = client_id in multiplayer.get_peers()
+		print("%s [LOCK_LOBBY] Client (%d) - data.connected: %s, actually_connected: %s" % [_get_time_string(), client_id, str(data.connected), str(actually_connected)])
+		# Check both the data flag AND if peer is actually connected
+		if data.connected and actually_connected:
 			connected_count += 1
 
+	print("%s [LOCK_LOBBY] Connected count: %d, Required: %d" % [_get_time_string(), connected_count, MAX_PLAYERS_PER_LOBBY])
+
 	if connected_count < MAX_PLAYERS_PER_LOBBY:
+		print("%s [LOCK_LOBBY] Not enough connected players! Reverting to IDLE or deleting" % _get_time_string())
 		# Not enough players, revert to IDLE or delete if empty
 		if connected_count == 0:
 			lobby.maybe_delete_empty_lobby()
@@ -113,6 +124,7 @@ func lock_lobby(lobby : Lobby) -> void:
 			lobby.status = Lobby.IDLE
 		return
 
+	print("%s [LOCK_LOBBY] Lobby locked successfully! Starting match..." % _get_time_string())
 	lobby.status = Lobby.LOCKED
 	create_lobby_on_clients(lobby)
 

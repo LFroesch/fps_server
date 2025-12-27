@@ -1,0 +1,116 @@
+[gd_scene load_steps=6 format=3 uid="uid://c187sn0dvr880"]
+
+[ext_resource type="PackedScene" uid="uid://braope5w5yohx" path="res://player/pickups/pickup.tscn" id="1_s52w3"]
+
+[sub_resource type="WorldBoundaryShape3D" id="WorldBoundaryShape3D_pojld"]
+
+[sub_resource type="WorldBoundaryShape3D" id="WorldBoundaryShape3D_1ynf7"]
+
+[sub_resource type="WorldBoundaryShape3D" id="WorldBoundaryShape3D_i136n"]
+
+[sub_resource type="NavigationMesh" id="NavigationMesh_s52w3"]
+
+[node name="Map2" type="Node3D"]
+
+[node name="SpawnPoints" type="Node3D" parent="."]
+
+[node name="RedPlayerSpawnPoint" type="Node3D" parent="SpawnPoints"]
+transform = Transform3D(-1, 0, 8.74228e-08, 0, 1, 0, -8.74228e-08, 0, -1, 1, 0, -30)
+
+[node name="RedPlayerSpawnPoint3" type="Node3D" parent="SpawnPoints"]
+transform = Transform3D(-1, 0, 8.74228e-08, 0, 1, 0, -8.74228e-08, 0, -1, -1, 0, -30)
+
+[node name="RedPlayerSpawnPoint4" type="Node3D" parent="SpawnPoints"]
+transform = Transform3D(-1, 0, 8.74228e-08, 0, 1, 0, -8.74228e-08, 0, -1, -3, 0, -30)
+
+[node name="RedPlayerSpawnPoint2" type="Node3D" parent="SpawnPoints"]
+transform = Transform3D(-1, 0, 8.74228e-08, 0, 1, 0, -8.74228e-08, 0, -1, 3, 0, -30)
+
+[node name="BluePlayerSpawnPoint5" type="Node3D" parent="SpawnPoints"]
+transform = Transform3D(1, 0, -1.74846e-07, 0, 1, 0, 1.74846e-07, 0, 1, -1, 0, 30)
+
+[node name="BluePlayerSpawnPoint6" type="Node3D" parent="SpawnPoints"]
+transform = Transform3D(1, 0, -1.74846e-07, 0, 1, 0, 1.74846e-07, 0, 1, 1, 0, 30)
+
+[node name="BluePlayerSpawnPoint7" type="Node3D" parent="SpawnPoints"]
+transform = Transform3D(1, 0, -1.74846e-07, 0, 1, 0, 1.74846e-07, 0, 1, 3, 0, 30)
+
+[node name="BluePlayerSpawnPoint8" type="Node3D" parent="SpawnPoints"]
+transform = Transform3D(1, 0, -1.74846e-07, 0, 1, 0, 1.74846e-07, 0, 1, -3, 0, 30)
+
+[node name="PlayerBoundaries" type="Node3D" parent="."]
+
+[node name="WallNorth" type="StaticBody3D" parent="PlayerBoundaries"]
+transform = Transform3D(1, 0, 0, 0, -4.37114e-08, -1, 0, 1, -4.37114e-08, 0, 0, -32.2)
+collision_mask = 0
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="PlayerBoundaries/WallNorth"]
+shape = SubResource("WorldBoundaryShape3D_pojld")
+debug_color = Color(0.7, 0, 0, 0.42)
+
+[node name="WallSouth" type="StaticBody3D" parent="PlayerBoundaries"]
+transform = Transform3D(1, 0, 0, 0, -4.37114e-08, 1, 0, -1, -4.37114e-08, 0, 0, 32.2)
+collision_mask = 0
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="PlayerBoundaries/WallSouth"]
+shape = SubResource("WorldBoundaryShape3D_1ynf7")
+debug_color = Color(0.7, 0, 0, 0.42)
+
+[node name="WallEast" type="StaticBody3D" parent="PlayerBoundaries"]
+transform = Transform3D(-4.37114e-08, -1, 0, 1, -4.37114e-08, 0, 0, 0, 1, 22.5, 0, 0)
+collision_mask = 0
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="PlayerBoundaries/WallEast"]
+shape = SubResource("WorldBoundaryShape3D_1ynf7")
+debug_color = Color(0.7, 0, 0, 0.42)
+
+[node name="WallWest" type="StaticBody3D" parent="PlayerBoundaries"]
+transform = Transform3D(-4.37114e-08, 1, 0, -1, -4.37114e-08, 0, 0, 0, 1, -22.5, 0, 0)
+collision_mask = 0
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="PlayerBoundaries/WallWest"]
+shape = SubResource("WorldBoundaryShape3D_1ynf7")
+debug_color = Color(0.7, 0, 0, 0.42)
+
+[node name="Ground" type="StaticBody3D" parent="PlayerBoundaries"]
+collision_mask = 0
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="PlayerBoundaries/Ground"]
+shape = SubResource("WorldBoundaryShape3D_i136n")
+
+[node name="ExactCollisions" type="Node3D" parent="."]
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(-3.78552e-08, -0.5, 0.866025, -2.18557e-08, 0.866025, 0.5, -1, 1.95399e-14, -4.37114e-08, 24.0914, 24.9683, 0)
+current = true
+
+[node name="Pickups" type="Node3D" parent="."]
+
+[node name="HealthPickup" parent="Pickups" instance=ExtResource("1_s52w3")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 15)
+
+[node name="HealthPickup2" parent="Pickups" instance=ExtResource("1_s52w3")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, -15)
+
+[node name="GrenadePickup" parent="Pickups" instance=ExtResource("1_s52w3")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 10)
+pickup_type = 1
+cooldown_time = 8.0
+
+[node name="AmmoPickup" parent="Pickups" instance=ExtResource("1_s52w3")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 5)
+pickup_type = 2
+cooldown_time = 8.0
+
+[node name="AmmoPickup2" parent="Pickups" instance=ExtResource("1_s52w3")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, -5)
+pickup_type = 2
+cooldown_time = 8.0
+
+[node name="GrenadePickup2" parent="Pickups" instance=ExtResource("1_s52w3")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, -10)
+pickup_type = 1
+cooldown_time = 8.0
+
+[node name="NavigationRegion3D" type="NavigationRegion3D" parent="."]
+navigation_mesh = SubResource("NavigationMesh_s52w3")

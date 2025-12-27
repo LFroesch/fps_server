@@ -1,0 +1,16 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://player/buyables/door_barrier_server.gd" id="1"]
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_door"]
+size = Vector3(3, 2.5, 0.3)
+
+[node name="DoorBarrierServer" type="StaticBody3D"]
+collision_layer = 17
+script = ExtResource("1")
+door_id = "door_1"
+cost = 750
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.25, 0)
+shape = SubResource("BoxShape3D_door")
