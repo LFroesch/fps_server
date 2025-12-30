@@ -40,7 +40,7 @@ const TYPE_CONFIG = {
 	}
 }
 
-const ATTACK_RANGE := 0.5
+const ATTACK_RANGE := 1.5
 const DETECTION_RANGE := 200.0
 const GRAVITY := 20.0
 const ANIM_BLEND_TIME := 0.2
@@ -96,10 +96,10 @@ func _ready() -> void:
 	if navigation_agent:
 		navigation_agent.radius = 0.3  # Small enough for doorways
 		navigation_agent.height = 1.8
-		navigation_agent.path_desired_distance = 1.0
-		navigation_agent.target_desired_distance = 0.8
+		navigation_agent.path_desired_distance = 0.5
+		navigation_agent.target_desired_distance = 0.5  # Must be <= ATTACK_RANGE to prevent dead zone
 		navigation_agent.path_max_distance = 15.0  # Give up if path is this far
-		navigation_agent.path_postprocessing = NavigationPathQueryParameters3D.PATH_POSTPROCESSING_EDGECENTERED
+		navigation_agent.path_postprocessing = NavigationPathQueryParameters3D.PATH_POSTPROCESSING_CORRIDORFUNNEL
 		navigation_agent.avoidance_enabled = false
 		navigation_agent.velocity_computed.connect(_on_velocity_computed)
 
@@ -114,9 +114,15 @@ func _ready() -> void:
 	await get_tree().physics_frame
 	await get_tree().physics_frame
 
+	# CRITICAL: Assign nav agent AFTER physics frames so it's fully initialized
+	if navigation_agent and lobby and lobby.navigation_map_rid.is_valid():
+		# Use the NavigationAgent3D property, NOT NavigationServer3D directly
+		navigation_agent.set_navigation_map(lobby.navigation_map_rid)
+
+		await get_tree().physics_frame
+
 	# Start AI
 	set_physics_process(true)
-	print("Zombie spawned: ", name, " Type: ", zombie_type, " HP: ", max_health, " Speed: ", speed)
 
 func _physics_process(delta: float) -> void:
 	# Check if zombie is stuck (check distance over the full timeout period)
@@ -124,7 +130,6 @@ func _physics_process(delta: float) -> void:
 	if stuck_timer >= STUCK_TIMEOUT:
 		var moved_distance = global_position.distance_to(last_position)
 		if moved_distance < STUCK_DISTANCE_THRESHOLD:
-			print("Zombie stuck! Moved only ", moved_distance, "m in ", STUCK_TIMEOUT, "s at ", global_position)
 			unstuck()
 		last_position = global_position
 		stuck_timer = 0.0
@@ -199,6 +204,7 @@ func _process_chase(delta: float) -> void:
 	path_recalc_timer += delta
 	if path_recalc_timer >= PATH_RECALC_TIME:
 		path_recalc_timer = 0.0
+		# NavigationAgent3D works in GLOBAL space
 		navigation_agent.target_position = target_player.global_position
 
 	# Check if target is reachable
@@ -219,6 +225,8 @@ func _process_chase(delta: float) -> void:
 	# Simple direct navigation
 	if not navigation_agent.is_navigation_finished():
 		var next_position = navigation_agent.get_next_path_position()
+
+		# Use only XZ from navigation, let physics handle Y
 		var direction = (next_position - global_position).normalized()
 		direction.y = 0
 
@@ -356,7 +364,7 @@ func die(killer_id : int) -> void:
 
 	# Notify lobby of zombie death
 	if lobby:
-		lobby.zombie_died(name.to_int(), killer_id, zombie_type, global_position)
+		lobby.zombie_died(name.to_int(), killer_id, zombie_type, position)  # Use LOCAL position, not global
 
 func set_anim(anim_name : String) -> void:
 	if current_anim == anim_name:
@@ -380,7 +388,6 @@ func find_jump_points() -> void:
 
 	# Search recursively for jump points
 	_recursive_find_jump_points(map_node)
-	print("Zombie ", name, " found ", available_jump_points.size(), " jump points")
 
 func _recursive_find_jump_points(node: Node) -> void:
 	if node is ZombieJumpPoint:
@@ -431,8 +438,6 @@ func execute_jump(jump_point: ZombieJumpPoint) -> void:
 	var end_pos := jump_point.get_destination_position()
 	var duration := jump_point.get_jump_duration()
 
-	print("Zombie ", name, " jumping from ", start_pos, " to ", end_pos, " (", duration, "s)")
-
 	# Create tween
 	active_jump_tween = create_tween()
 	active_jump_tween.set_ease(Tween.EASE_IN_OUT)
@@ -461,7 +466,6 @@ func execute_jump(jump_point: ZombieJumpPoint) -> void:
 	active_jump_tween.finished.connect(func():
 		current_state = previous_state
 		active_jump_tween = null
-		print("Zombie ", name, " jump complete")
 	)
 
 func _try_step_up() -> void:
@@ -491,7 +495,6 @@ func _try_step_up() -> void:
 
 func unstuck() -> void:
 	# Try multiple unstuck strategies
-	print("Attempting to unstuck zombie at ", global_position)
 	
 	# Strategy 1: Clear navigation and force new target
 	if navigation_agent:
@@ -512,11 +515,9 @@ func unstuck() -> void:
 	if not result:
 		# Path is clear, teleport
 		global_position = unstuck_pos
-		print("Teleported zombie to ", unstuck_pos)
 	else:
 		# Try moving up only
 		global_position += Vector3(0, 1.0, 0)
-		print("Moved zombie up")
 	
 	# Strategy 3: Reset state
 	current_state = State.IDLE

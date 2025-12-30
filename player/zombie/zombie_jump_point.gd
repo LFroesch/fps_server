@@ -18,19 +18,12 @@ enum JumpType {
 @export var enabled := true  ## Toggle this jump point on/off
 
 func _ready() -> void:
-	# Add debug info
-	print("ZombieJumpPoint '", name, "' initialized at ", global_position)
-	if destination:
-		print("  -> Destination at: ", destination.global_position)
-		print("  -> Jump distance: ", global_position.distance_to(destination.global_position), " meters")
-	else:
-		print("  -> ERROR: No destination set!")
+	pass
 
 func is_within_trigger_range(zombie_position : Vector3) -> bool:
 	if not enabled:
 		return false
 	if not destination:
-		print("Jump point ", name, " has no destination!")
 		return false
 	var dist := global_position.distance_to(zombie_position)
 	return dist <= trigger_radius

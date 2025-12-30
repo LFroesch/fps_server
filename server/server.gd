@@ -3,8 +3,7 @@ extends Node
 const PORT := 7777
 const MAX_CLIENTS := 64
 const MAX_LOBBIES := 4
-const MAX_PLAYERS_PER_LOBBY := 2
-const DISTANCE_BETWEEN_LOBBIES := 100
+const DISTANCE_BETWEEN_LOBBIES := 50
 
 var peer := ENetMultiplayerPeer.new()
 var lobbies : Array[Lobby] = []
@@ -19,9 +18,7 @@ func _ready() -> void:
 	var error := peer.create_server(PORT, MAX_CLIENTS)
 
 	if error != OK:
-		print("%s FPS Server Failed to Start" % _get_time_string())
 		return
-	print("%s FPS Server Started" % _get_time_string())
 	
 	multiplayer.multiplayer_peer = peer
 	peer.peer_connected.connect(_on_peer_connected)
@@ -31,12 +28,10 @@ func _ready() -> void:
 
 func _on_peer_connected(id : int) -> void:
 	idle_clients.append(id)
-	print("%s Client (%d) Connected to FPS Server" % [_get_time_string(), id])
 
 func _on_peer_disconnected(id : int) -> void:
 	remove_client_from_lobby(id)
 	idle_clients.erase(id)
-	print("%s Client (%d) Disconnected from FPS Server" % [_get_time_string(),id])
 
 func remove_client_from_lobby(client_id : int) -> void:
 	var maybe_lobby := get_lobby_from_client_id(client_id)
@@ -54,11 +49,14 @@ func update_lobby_spots() -> void:
 		for i in lobby_spots.size():
 			if lobby_spots[i] == null:
 				lobby_spots[i] = lobby
+				var old_y = lobby.global_position.y
 				lobby.global_position.y = DISTANCE_BETWEEN_LOBBIES * i
+				print("[SERVER] Lobby %s assigned to slot %d (Y %.1f -> %.1f), zombies: %d" % [lobby.lobby_id, i, old_y, lobby.global_position.y, lobby.zombies.size()])
 				break
 	# Deleting unused lobby spots
 	for i in lobby_spots.size():
 		if lobby_spots[i] != null and not lobby_spots[i] in lobbies:
+			print("[SERVER] Clearing lobby spot %d" % i)
 			lobby_spots[i] = null
 
 func get_lobby_from_client_id(id : int) -> Lobby:
@@ -90,33 +88,31 @@ func c_try_connect_client_to_lobby(player_name : String, map_id : int, game_mode
 		idle_clients.erase(client_id)
 		lobby_clients_updated(maybe_lobby)
 
-		if maybe_lobby.client_data.keys().size() >= MAX_PLAYERS_PER_LOBBY:
+		if maybe_lobby.client_data.keys().size() >= maybe_lobby.max_players:
 			lock_lobby(maybe_lobby)
 
-		print("%s Client (%d) Connected to Lobby (%s) for Map: %s" % [_get_time_string(), client_id, maybe_lobby.name, MapRegistry.get_map_name(map_id)])
 		return
 
 	s_client_cant_connect_to_lobby.rpc_id(client_id)
 
 func lock_lobby(lobby : Lobby) -> void:
-	print("%s [LOCK_LOBBY] Attempting to lock lobby (%s)" % [_get_time_string(), lobby.name])
-	print("%s [LOCK_LOBBY] Total clients in lobby.client_data: %d" % [_get_time_string(), lobby.client_data.size()])
-	print("%s [LOCK_LOBBY] Connected peers: %s" % [_get_time_string(), str(multiplayer.get_peers())])
 
 	# Verify we still have enough connected players before locking
 	var connected_count := 0
 	for client_id in lobby.client_data.keys():
 		var data = lobby.client_data[client_id]
 		var actually_connected = client_id in multiplayer.get_peers()
-		print("%s [LOCK_LOBBY] Client (%d) - data.connected: %s, actually_connected: %s" % [_get_time_string(), client_id, str(data.connected), str(actually_connected)])
 		# Check both the data flag AND if peer is actually connected
 		if data.connected and actually_connected:
 			connected_count += 1
 
-	print("%s [LOCK_LOBBY] Connected count: %d, Required: %d" % [_get_time_string(), connected_count, MAX_PLAYERS_PER_LOBBY])
+	# Determine minimum required players based on game mode
+	var min_required := 1
+	if lobby.game_mode == MapRegistry.GameMode.PVP:
+		min_required = 2
 
-	if connected_count < MAX_PLAYERS_PER_LOBBY:
-		print("%s [LOCK_LOBBY] Not enough connected players! Reverting to IDLE or deleting" % _get_time_string())
+
+	if connected_count < min_required:
 		# Not enough players, revert to IDLE or delete if empty
 		if connected_count == 0:
 			lobby.maybe_delete_empty_lobby()
@@ -124,20 +120,18 @@ func lock_lobby(lobby : Lobby) -> void:
 			lobby.status = Lobby.IDLE
 		return
 
-	print("%s [LOCK_LOBBY] Lobby locked successfully! Starting match..." % _get_time_string())
 	lobby.status = Lobby.LOCKED
 	create_lobby_on_clients(lobby)
 
 func create_lobby_on_clients(lobby : Lobby) -> void:
 	for lobby_client_id in lobby.client_data.keys():
-		print("%s Match Starting with Client (%d) in Lobby (%s)" % [_get_time_string(), lobby_client_id, lobby.name])
 		s_create_lobby_on_clients.rpc_id(lobby_client_id, lobby.name)
 
 @rpc("authority", "call_remote", "reliable")
 func s_create_lobby_on_clients(lobby_name: String) -> void:
 	pass
 
-func get_non_full_lobby(map_id : int, game_mode : int) -> Lobby:
+func get_non_full_lobby(map_id : int, game_mode : int, desired_size : int = -1) -> Lobby:
 	# If "Any Map" (-1), try to backfill any non-full lobby
 	if map_id == MapRegistry.ANY_MAP:
 		for lobby in lobbies:
@@ -147,7 +141,9 @@ func get_non_full_lobby(map_id : int, game_mode : int) -> Lobby:
 				continue
 			if lobby.game_mode != game_mode:
 				continue
-			if lobby.client_data.keys().size() < MAX_PLAYERS_PER_LOBBY:
+			if desired_size > 0 and lobby.max_players != desired_size:
+				continue
+			if lobby.client_data.keys().size() < lobby.max_players:
 				return lobby
 	else:
 		# Look for lobbies matching the specific map and game mode
@@ -160,15 +156,20 @@ func get_non_full_lobby(map_id : int, game_mode : int) -> Lobby:
 				continue
 			if lobby.game_mode != game_mode:
 				continue
-			if lobby.client_data.keys().size() < MAX_PLAYERS_PER_LOBBY:
+			if desired_size > 0 and lobby.max_players != desired_size:
+				continue
+			if lobby.client_data.keys().size() < lobby.max_players:
 				return lobby
 
 	# Create new lobby if we have space
 	if lobbies.size() < MAX_LOBBIES:
 		var new_lobby := Lobby.new()
 		lobbies.append(new_lobby)
-		new_lobby.name = str(new_lobby.get_instance_id())
+		new_lobby.lobby_id = Lobby.generate_lobby_code()
+		new_lobby.name = new_lobby.lobby_id
 		new_lobby.game_mode = game_mode
+		new_lobby.max_players = desired_size if desired_size > 0 else 4
+		new_lobby.is_public = true
 		# Randomly select a map if "Any" was chosen
 		if map_id == MapRegistry.ANY_MAP:
 			var available_maps := MapRegistry.get_all_map_ids()
@@ -178,7 +179,7 @@ func get_non_full_lobby(map_id : int, game_mode : int) -> Lobby:
 		add_child(new_lobby)
 		update_lobby_spots()
 		var mode_name := "PvP" if game_mode == MapRegistry.GameMode.PVP else "Zombies"
-		print("%s Created new lobby for Map: %s (%s mode)" % [_get_time_string(), MapRegistry.get_map_name(new_lobby.map_id), mode_name])
+		print("%s Created new lobby (%s) for Map: %s (%s mode, %d players)" % [_get_time_string(), new_lobby.lobby_id, MapRegistry.get_map_name(new_lobby.map_id), mode_name, new_lobby.max_players])
 		return new_lobby
 
 	print("%s Lobbies Full" % _get_time_string())
@@ -190,7 +191,7 @@ func lobby_clients_updated(lobby : Lobby) -> void:
 		return
 
 	for client_id in lobby.client_data.keys():
-		s_lobby_clients_updated.rpc_id(client_id, lobby.client_data.keys().size(), MAX_PLAYERS_PER_LOBBY)
+		s_lobby_clients_updated.rpc_id(client_id, lobby.client_data.keys().size(), lobby.max_players)
 
 @rpc("authority", "call_remote", "reliable")
 func s_lobby_clients_updated(connected_clients : int, max_clients : int) -> void:
@@ -222,3 +223,188 @@ func delete_lobby(lobby : Lobby) -> void:
 	lobbies.erase(lobby)
 	lobby.queue_free()
 	update_lobby_spots()
+
+# New matchmaking system RPCs
+@rpc("any_peer", "call_remote", "reliable")
+func c_create_lobby(player_name: String, max_players: int, map_id: int, game_mode: int, is_public: bool) -> void:
+	var client_id := multiplayer.get_remote_sender_id()
+
+	# Validate max_players
+	if game_mode == MapRegistry.GameMode.PVP and (max_players != 2 and max_players != 4):
+		s_client_cant_connect_to_lobby.rpc_id(client_id)
+		return
+	if max_players < 1 or max_players > 4:
+		s_client_cant_connect_to_lobby.rpc_id(client_id)
+		return
+
+	if lobbies.size() >= MAX_LOBBIES:
+		s_client_cant_connect_to_lobby.rpc_id(client_id)
+		return
+
+	# Create new lobby
+	var new_lobby := Lobby.new()
+	lobbies.append(new_lobby)
+	new_lobby.lobby_id = Lobby.generate_lobby_code()
+	new_lobby.name = new_lobby.lobby_id
+	new_lobby.host_id = client_id
+	new_lobby.max_players = max_players
+	new_lobby.map_id = map_id
+	new_lobby.game_mode = game_mode
+	new_lobby.is_public = is_public
+	add_child(new_lobby)
+	update_lobby_spots()
+
+	print("%s [SERVER] Created lobby %s. Total lobbies: %d" % [_get_time_string(), new_lobby.lobby_id, lobbies.size()])
+	for i in lobbies.size():
+		var lob = lobbies[i]
+		print("  Lobby %d: %s (players: %d/%d, zombies: %d)" % [i, lob.lobby_id, lob.client_data.size(), lob.max_players, lob.zombies.size()])
+
+	# Add creator as first player
+	new_lobby.add_client(client_id, player_name)
+	idle_clients.erase(client_id)
+
+	print("%s Client (%d) created lobby (%s): %d players, %s mode, Map: %s" % [_get_time_string(), client_id, new_lobby.lobby_id, max_players, "PvP" if game_mode == MapRegistry.GameMode.PVP else "Zombies", MapRegistry.get_map_name(map_id)])
+
+	# Send lobby data to creator
+	s_joined_lobby.rpc_id(client_id, new_lobby.lobby_id, get_lobby_data(new_lobby))
+
+@rpc("any_peer", "call_remote", "reliable")
+func c_join_lobby(lobby_id: String, player_name: String) -> void:
+	var client_id := multiplayer.get_remote_sender_id()
+
+	# Find lobby by ID
+	var target_lobby: Lobby = null
+	for lobby in lobbies:
+		if lobby.lobby_id == lobby_id:
+			target_lobby = lobby
+			break
+
+	if not target_lobby or target_lobby.status != Lobby.IDLE or target_lobby.being_deleted:
+		s_client_cant_connect_to_lobby.rpc_id(client_id)
+		return
+
+	if target_lobby.client_data.keys().size() >= target_lobby.max_players:
+		s_client_cant_connect_to_lobby.rpc_id(client_id)
+		return
+
+	target_lobby.add_client(client_id, player_name)
+	idle_clients.erase(client_id)
+
+	print("%s Client (%d) joined lobby (%s)" % [_get_time_string(), client_id, lobby_id])
+
+	var lobby_data = get_lobby_data(target_lobby)
+
+	# Send s_joined_lobby to the NEW player (transitions to waiting room)
+	s_joined_lobby.rpc_id(client_id, lobby_id, lobby_data)
+
+	# Send s_lobby_updated to EXISTING players (updates their waiting room)
+	for existing_client_id in target_lobby.client_data.keys():
+		if existing_client_id != client_id:  # Don't send update to the new joiner
+			s_lobby_updated.rpc_id(existing_client_id, lobby_id, lobby_data)
+
+@rpc("any_peer", "call_remote", "reliable")
+func c_quick_play(player_name: String, game_mode: int, map_pref: int, size_pref: int) -> void:
+	var client_id := multiplayer.get_remote_sender_id()
+	var maybe_lobby := get_non_full_lobby(map_pref, game_mode, size_pref)
+
+	if maybe_lobby:
+		maybe_lobby.add_client(client_id, player_name)
+		idle_clients.erase(client_id)
+
+		print("%s Client (%d) quick-joined lobby (%s)" % [_get_time_string(), client_id, maybe_lobby.lobby_id])
+
+		var lobby_data = get_lobby_data(maybe_lobby)
+
+		# Send s_joined_lobby to the NEW player (transitions to waiting room)
+		s_joined_lobby.rpc_id(client_id, maybe_lobby.lobby_id, lobby_data)
+
+		# Send s_lobby_updated to EXISTING players (updates their waiting room)
+		for existing_client_id in maybe_lobby.client_data.keys():
+			if existing_client_id != client_id:  # Don't send update to the new joiner
+				s_lobby_updated.rpc_id(existing_client_id, maybe_lobby.lobby_id, lobby_data)
+	else:
+		s_client_cant_connect_to_lobby.rpc_id(client_id)
+
+@rpc("any_peer", "call_remote", "reliable")
+func c_start_lobby() -> void:
+	var client_id := multiplayer.get_remote_sender_id()
+	var lobby := get_lobby_from_client_id(client_id)
+
+	if not lobby or lobby.host_id != client_id:
+		return
+
+	# Validate player count
+	var player_count = lobby.client_data.keys().size()
+	if lobby.game_mode == MapRegistry.GameMode.PVP and player_count < 2:
+		return
+	if player_count < 1:
+		return
+
+	lock_lobby(lobby)
+
+@rpc("any_peer", "call_remote", "reliable")
+func c_kick_player(target_client_id: int) -> void:
+	var client_id := multiplayer.get_remote_sender_id()
+	var lobby := get_lobby_from_client_id(client_id)
+
+	if not lobby or lobby.host_id != client_id:
+		return
+
+	if not lobby.client_data.has(target_client_id):
+		return
+
+	print("%s Host (%d) kicked player (%d) from lobby (%s)" % [_get_time_string(), client_id, target_client_id, lobby.lobby_id])
+	s_kicked_from_lobby.rpc_id(target_client_id, "You were removed from the lobby")
+	remove_client_from_lobby(target_client_id)
+
+@rpc("authority", "call_remote", "reliable")
+func s_joined_lobby(lobby_id: String, lobby_data: Dictionary) -> void:
+	pass
+
+@rpc("authority", "call_remote", "reliable")
+func s_lobby_updated(lobby_id: String, lobby_data: Dictionary) -> void:
+	pass
+
+@rpc("authority", "call_remote", "reliable")
+func s_kicked_from_lobby(reason: String) -> void:
+	pass
+
+@rpc("any_peer", "call_remote", "reliable")
+func c_request_lobby_list(game_mode: int) -> void:
+	var client_id := multiplayer.get_remote_sender_id()
+	var lobby_list: Array[Dictionary] = []
+
+	for lobby in lobbies:
+		# Only show public lobbies that are idle (not started/locked) and match game mode
+		if lobby.is_public and lobby.status == Lobby.IDLE and lobby.game_mode == game_mode and not lobby.being_deleted:
+			var player_count = lobby.client_data.keys().size()
+			# Only show lobbies that aren't full
+			if player_count < lobby.max_players:
+				lobby_list.append({
+					"lobby_id": lobby.lobby_id,
+					"map_id": lobby.map_id,
+					"map_name": MapRegistry.get_map_name(lobby.map_id),
+					"game_mode": lobby.game_mode,
+					"current_players": player_count,
+					"max_players": lobby.max_players,
+					"host_id": lobby.host_id,
+					"host_name": lobby.client_data.get(lobby.host_id, {}).get("display_name", "Unknown")
+				})
+
+	s_lobby_list_updated.rpc_id(client_id, lobby_list)
+
+@rpc("authority", "call_remote", "reliable")
+func s_lobby_list_updated(lobbies_list: Array[Dictionary]) -> void:
+	pass
+
+func get_lobby_data(lobby: Lobby) -> Dictionary:
+	return {
+		"lobby_id": lobby.lobby_id,
+		"host_id": lobby.host_id,
+		"max_players": lobby.max_players,
+		"current_players": lobby.client_data.keys().size(),
+		"map_id": lobby.map_id,
+		"game_mode": lobby.game_mode,
+		"is_public": lobby.is_public,
+		"player_names": lobby.client_data
+	}

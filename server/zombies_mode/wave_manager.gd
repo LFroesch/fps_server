@@ -94,20 +94,29 @@ func spawn_zombie() -> void:
 	# Determine zombie type based on wave
 	var zombie_type := determine_zombie_type()
 
-	# Create zombie with unique ID
-	var zombie_id := Time.get_ticks_msec() * 1000 + randi() % 1000
+	# Create zombie with unique ID using lobby's counter
+	var zombie_id := lobby.next_zombie_id
+	lobby.next_zombie_id += 1
+
 	var zombie : ZombieServer = preload("res://player/zombie/zombie_server.tscn").instantiate()
 	zombie.zombie_type = zombie_type
 	zombie.lobby = lobby
 	zombie.name = str(zombie_id)
-	zombie.global_transform = spawn_point.global_transform
 
 	lobby.add_child(zombie, true)
+	zombie.global_position = spawn_point.global_position
+
+	# CRITICAL: Assign zombie to lobby's physics space
+	if lobby.physics_space_rid.is_valid():
+		PhysicsServer3D.body_set_space(zombie.get_rid(), lobby.physics_space_rid)
+
 	lobby.zombies[zombie_id] = zombie
 
 	# Notify clients to spawn zombie visually
+	# Send position RELATIVE to lobby offset (clients are always at y=0)
+	var client_position = zombie.position  # Use LOCAL position, not global
 	for client_id in lobby.get_connected_clients():
-		lobby.s_spawn_zombie.rpc_id(client_id, zombie_id, zombie.global_position, zombie_type)
+		lobby.s_spawn_zombie.rpc_id(client_id, zombie_id, client_position, zombie_type)
 
 func determine_zombie_type() -> int:
 	# Wave 1-3: 100% normal

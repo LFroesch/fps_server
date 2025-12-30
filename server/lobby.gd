@@ -1,6 +1,9 @@
 extends Node3D
 class_name Lobby
 
+# CRITICAL: Each lobby needs its own physics space to prevent cross-lobby collisions
+var physics_space_rid : RID
+
 const WORLD_STATE_SEND_FRAME := 3
 const WORLD_STATES_TO_REMEMBER := 60
 const DEATH_COOLDOWN_LENGTH := 2
@@ -19,6 +22,10 @@ var status := IDLE
 var being_deleted := false
 var map_id : int = -1
 var game_mode : int = 0  # MapRegistry.GameMode.PVP default
+var lobby_id : String = ""  # 6-char alphanumeric code
+var host_id : int = -1  # First player = host
+var max_players : int = 2  # 1-4 players
+var is_public : bool = true  # Joinable via quick play
 
 var callable_when_clients_ready : Callable
 var waiting_players_ready := false
@@ -33,6 +40,8 @@ var spawn_points : Array[Node3D] = []
 var grenades := {}
 var zombies := {}  # For zombies mode
 var wave_manager = null  # WaveManager instance for zombies mode
+var next_zombie_id := 0  # Unique zombie ID counter per lobby
+var navigation_map_rid : RID  # Unique navigation map for this lobby's zombies
 
 var match_time_left := MATCH_LENGTH_SEC
 var match_timer := Timer.new()
@@ -41,14 +50,47 @@ func _get_time_string() -> String:
 	var datetime = Time.get_datetime_dict_from_system()
 	return "[%02d:%02d:%02d] -" % [datetime.hour, datetime.minute, datetime.second]
 
+static func generate_lobby_code() -> String:
+	const CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	var code = ""
+	for i in 6:
+		code += CHARS[randi() % CHARS.length()]
+	return code
+
 func _ready() -> void:
+	# Create unique physics space for this lobby
+	# CRITICAL: Without this, lobbies at different Y positions share physics,
+	# causing zombies/players to collide with floors from other lobbies
+	physics_space_rid = PhysicsServer3D.space_create()
+	PhysicsServer3D.space_set_active(physics_space_rid, true)
+
 	set_physics_process(false)
 	add_child(match_timer)
 	match_timer.timeout.connect(match_timer_sec_passed)
+
+func _exit_tree() -> void:
+	# Cleanup physics space
+	if physics_space_rid.is_valid():
+		PhysicsServer3D.free_rid(physics_space_rid)
+
+	# Cleanup navigation map
+	if navigation_map_rid.is_valid():
+		NavigationServer3D.free_rid(navigation_map_rid)
 	
+## Recursively assigns all physics bodies in node tree to this lobby's physics space
+## This prevents cross-lobby physics interactions (collisions between different lobbies)
+func assign_physics_space_recursive(node: Node) -> void:
+	if node is PhysicsBody3D:
+		var body_rid = node.get_rid()
+		PhysicsServer3D.body_set_space(body_rid, physics_space_rid)
+
+	# Recursively process all children
+	for child in node.get_children():
+		assign_physics_space_recursive(child)
+
 func get_connected_clients() -> Array[int]:
 	var connected_client_ids : Array[int] = []
-	
+
 	for client_id in client_data.keys():
 		if client_data.get(client_id).connected:
 			connected_client_ids.append(client_id)
@@ -86,12 +128,12 @@ func update_zombies_in_world_state() -> void:
 	# Clear old zombie states
 	current_world_state.zs.clear()
 
-	# Add current zombie positions
+	# Add current zombie positions (use local position relative to lobby)
 	for zombie_id in zombies.keys():
 		var zombie = zombies.get(zombie_id)
 		if is_instance_valid(zombie):
 			current_world_state.zs[zombie_id] = {
-				"pos" : zombie.global_position,
+				"pos" : zombie.position,  # Local position, not global
 				"rot_y" : zombie.rotation.y
 			}
 	
@@ -101,13 +143,31 @@ func s_send_world_state(new_world_state : Dictionary) -> void:
 
 func add_client(id : int, player_name : String) -> void:
 	client_data[id] = {"display_name" : player_name, "connected" : true, "kills" : 0, "deaths" : 0, "weapon_id" : 0, "points" : 0}
-	
+	# Set first player as host
+	if host_id == -1:
+		host_id = id
+
 func remove_client(id : int) -> void:
 	client_data.get(id).connected = false
+
+	# Host migration - promote oldest remaining player
+	if id == host_id and status == IDLE:
+		var connected = get_connected_clients()
+		if connected.size() > 0:
+			host_id = connected[0]
+
 	check_players_ready()
 	maybe_delete_empty_lobby()
 	delete_player(id)
 	check_both_teams_are_connected()
+
+	# Notify remaining players in waiting room that someone left
+	if status == IDLE:
+		var server = get_node_or_null("/root/Server")
+		if server and server.has_method("get_lobby_data"):
+			var lobby_data = server.get_lobby_data(self)
+			for client_id in get_connected_clients():
+				server.s_lobby_updated.rpc_id(client_id, lobby_id, lobby_data)
 	
 func check_both_teams_are_connected() -> void:
 	var connected_blue_players := 0
@@ -168,30 +228,19 @@ func _safe_delete() -> void:
 @rpc("any_peer", "call_remote", "reliable")
 func c_lock_client() -> void:
 	var client_id := multiplayer.get_remote_sender_id()
-	print("%s [SERVER LOBBY] c_lock_client called by client %d" % [_get_time_string(), client_id])
-	print("%s [SERVER LOBBY] client_data.keys(): %s" % [_get_time_string(), str(client_data.keys())])
-	print("%s [SERVER LOBBY] ready_clients: %s" % [_get_time_string(), str(ready_clients)])
 	if not client_id in client_data.keys() or client_id in ready_clients:
-		print("%s [SERVER LOBBY] Client %d rejected (not in client_data or already ready)" % [_get_time_string(), client_id])
 		return
 	ready_clients.append(client_id)
 	waiting_players_ready = true
-	print("%s [SERVER LOBBY] Client %d marked as ready. Checking if all players ready..." % [_get_time_string(), client_id])
 	check_players_ready(start_loading_map)
 
 func check_players_ready(maybe_callable = null) -> void:
-	print("%s [SERVER LOBBY] check_players_ready called" % _get_time_string())
-	print("%s [SERVER LOBBY] waiting_players_ready: %s" % [_get_time_string(), str(waiting_players_ready)])
 	if not waiting_players_ready:
 		return
 	var connected = get_connected_clients()
-	print("%s [SERVER LOBBY] Connected clients: %s" % [_get_time_string(), str(connected)])
-	print("%s [SERVER LOBBY] Ready clients: %s" % [_get_time_string(), str(ready_clients)])
 	for maybe_ready_client in connected:
 		if not maybe_ready_client in ready_clients:
-			print("%s [SERVER LOBBY] Still waiting for client %d" % [_get_time_string(), maybe_ready_client])
 			return
-	print("%s [SERVER LOBBY] All players ready! Calling start function..." % _get_time_string())
 	if maybe_callable is Callable:
 		callable_when_clients_ready = maybe_callable
 
@@ -207,12 +256,16 @@ func start_loading_map() -> void:
 
 	var map = load(map_path).instantiate()
 	map.name = "Map"
+
 	add_child(map, true)
 
-	# Auto-setup navigation for zombies mode
-	if game_mode == 1:  # ZOMBIES
-		setup_map_navigation(map)
+	# Assign all physics bodies in the map to this lobby's physics space
+	assign_physics_space_recursive(map)
 
+	# Setup navigation for modes that need AI pathfinding
+	if game_mode == MapRegistry.GameMode.ZOMBIES:
+		setup_map_navigation(map)
+	
 	var spawn_point_holder = map.get_node("SpawnPoints")
 	if spawn_point_holder != null: # NOT GROUPS BECAUSE THESE ARE LOCAL TO EACH LOBBY
 		for spawn_point in spawn_point_holder.get_children():
@@ -228,24 +281,35 @@ func start_loading_map() -> void:
 	for ready_client in ready_clients:
 		s_start_loading_map.rpc_id(ready_client, map_id, game_mode)
 
+## Sets up navigation for AI pathfinding (zombies mode, etc)
+## Requires map to have a NavigationRegion3D node at root level
 func setup_map_navigation(map: Node3D) -> void:
-	# Check if nav already exists
-	if map.has_node("NavigationRegion3D"):
-		print("Map already has NavigationRegion3D")
+	# Create a UNIQUE navigation map for THIS lobby only
+	# This ensures zombies/AI in different lobbies use separate navigation
+	navigation_map_rid = NavigationServer3D.map_create()
+	NavigationServer3D.map_set_active(navigation_map_rid, true)
+
+	var nav_region = map.get_node_or_null("NavigationRegion3D")
+	if not nav_region:
+		push_error("[LOBBY %s] Map '%s' missing NavigationRegion3D node! AI pathfinding will not work." % [lobby_id, map.name])
 		return
 
-	# Create navigation region
-	var nav_region = NavigationRegion3D.new()
-	nav_region.name = "NavigationRegion3D"
+	# Disable to clear any auto-registration to default navigation map
+	nav_region.enabled = false
 
-	# Load pre-built navmesh
-	var navmesh = load("res://maps/default_navmesh.tres")
-	if navmesh:
-		nav_region.navigation_mesh = navmesh
-		map.add_child(nav_region, true)
-		print("✓ Navigation mesh loaded for zombies mode")
-	else:
-		print("WARNING: Could not load navigation mesh - zombies may not move!")
+	# Duplicate the navmesh to avoid shared state between lobbies
+	if nav_region.navigation_mesh:
+		nav_region.navigation_mesh = nav_region.navigation_mesh.duplicate(true)
+
+	# Register to our unique navigation map
+	NavigationServer3D.region_set_map(nav_region.get_rid(), navigation_map_rid)
+
+	# Re-enable
+	nav_region.enabled = true
+
+	# Wait for scene tree to update transforms
+	await get_tree().physics_frame
+	await get_tree().physics_frame
 
 
 @rpc("authority", "call_remote", "reliable")
@@ -272,7 +336,7 @@ func s_spawn_pickup(pickup_name : String, pickup_type : int, pos : Vector3) -> v
 	pass
 
 func spawn_players() -> void:
-	if game_mode == 1:  # MapRegistry.GameMode.ZOMBIES
+	if game_mode == MapRegistry.GameMode.ZOMBIES:
 		spawn_players_zombies_mode()
 	else:
 		spawn_players_pvp_mode()
@@ -413,7 +477,7 @@ func start_match() -> void:
 	spawn_players()
 
 	# Initialize zombies mode if needed
-	if game_mode == 1:  # MapRegistry.GameMode.ZOMBIES
+	if game_mode == MapRegistry.GameMode.ZOMBIES:
 		var WaveManagerClass = load("res://server/zombies_mode/wave_manager.gd")
 		wave_manager = WaveManagerClass.new()
 		wave_manager.lobby = self
@@ -430,7 +494,7 @@ func start_match() -> void:
 	set_physics_process(true)
 
 	# Only use match timer for PvP mode
-	if game_mode == 0:  # PVP
+	if game_mode == MapRegistry.GameMode.PVP:
 		update_match_time_left()
 		match_timer.start()
 
@@ -517,15 +581,12 @@ func calculate_shot_results(shooter_id : int, time_stamp : int, player_data : Di
 				if is_instance_valid(zombie):
 					# Store current state
 					zombie_original_states[zombie_id] = {
-						"pos": zombie.global_position,
+						"pos": zombie.position,  # Store LOCAL position
 						"rot_y": zombie.rotation.y
 					}
-					# Rewind to historical state
-					var historical_pos = target_world_state.zs[zombie_id].pos
-					var distance_rewound = zombie.global_position.distance_to(historical_pos)
-					if distance_rewound > 0.5:
-						print("LAG COMP: Rewinding zombie ", zombie_id, " by ", distance_rewound, "m")
-					zombie.global_position = historical_pos
+					# Rewind to historical state (historical pos is in LOCAL coordinates)
+					var historical_local_pos = target_world_state.zs[zombie_id].pos
+					zombie.position = historical_local_pos  # Set LOCAL position
 					zombie.rotation.y = target_world_state.zs[zombie_id].rot_y
 
 	var weapon_data := WeaponConfig.get_weapon_data(client_data.get(shooter_id).weapon_id)
@@ -646,7 +707,7 @@ func calculate_shot_results(shooter_id : int, time_stamp : int, player_data : Di
 		if zombies.has(zombie_id):
 			var zombie = zombies.get(zombie_id)
 			if is_instance_valid(zombie):
-				zombie.global_position = zombie_original_states[zombie_id].pos
+				zombie.position = zombie_original_states[zombie_id].pos  # Restore LOCAL position
 				zombie.rotation.y = zombie_original_states[zombie_id].rot_y
 
 func spawn_bullet_hit_fx(pos: Vector3, normal : Vector3, type: int) -> void:
@@ -861,10 +922,12 @@ func zombie_died(zombie_id : int, killer_id : int, zombie_type : int, death_posi
 	if game_mode != 1:  # MapRegistry.GameMode.ZOMBIES = 1
 		return
 
+	print("[LOBBY %s] Zombie %d died. Current zombie count: %d" % [lobby_id, zombie_id, zombies.size()])
 	# Remove zombie from tracking
 	if zombies.has(zombie_id):
 		zombies.get(zombie_id).queue_free()
 		zombies.erase(zombie_id)
+		print("[LOBBY %s] Zombie %d removed. New count: %d" % [lobby_id, zombie_id, zombies.size()])
 
 	# Award points to killer
 	var zombie_points := 100  # Default
@@ -1247,34 +1310,38 @@ func c_try_buy_weapon(weapon_id: int, is_ammo: bool = false) -> void:
 @rpc("any_peer", "call_remote", "reliable")
 func c_try_buy_door(door_id: String) -> void:
 	var peer_id = multiplayer.get_remote_sender_id()
-	
+	print("%s SERVER: Player %d trying to buy door: '%s'" % [_get_time_string(), peer_id, door_id])
+
 	# Already open?
 	if opened_doors.has(door_id):
 		print("%s Player %d tried to buy door %s but it's already open" % [_get_time_string(), peer_id, door_id])
 		return
-	
+
 	if not client_data.has(peer_id):
 		return
-	
+
 	var player_points = client_data[peer_id].points
 	var cost = door_costs.get(door_id, 750)
-	
+
 	if player_points < cost:
 		s_purchase_failed.rpc_id(peer_id, "Not enough points!")
 		print("%s Player %d tried to buy door %s but only has %d points (needs %d)" % [_get_time_string(), peer_id, door_id, player_points, cost])
 		return
-	
+
 	# Deduct points
 	client_data[peer_id].points -= cost
 	opened_doors[door_id] = true
 
 	# Open door on server
+	print("%s SERVER: Opening door '%s' on server..." % [_get_time_string(), door_id])
 	open_door_on_server(door_id)
 
 	# Broadcast to ALL clients
+	print("%s SERVER: Broadcasting door open to %d clients" % [_get_time_string(), get_connected_clients().size()])
 	for client_id in get_connected_clients():
+		print("%s   Sending s_door_opened('%s') to client %d" % [_get_time_string(), door_id, client_id])
 		s_door_opened.rpc_id(client_id, door_id)
-	
+
 	s_update_player_points.rpc_id(peer_id, client_data[peer_id].points)
 	
 	print("%s Player %d opened door %s for %d points (now has %d points)" % [_get_time_string(), peer_id, door_id, cost, client_data[peer_id].points])

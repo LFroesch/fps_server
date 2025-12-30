@@ -7,14 +7,14 @@ enum GameMode {
 
 const MAPS = {
 	0: {
-		"name": "Farm",
-		"client_path": "res://maps/map_farm.tscn",
-		"server_path": "res://maps/server_farm.tscn"
-	},
-	1: {
 		"name": "Killroom",
 		"client_path": "res://maps/map_killroom.tscn",
 		"server_path": "res://maps/server_killroom.tscn"
+	},
+	1: {
+		"name": "Farm",
+		"client_path": "res://maps/map_farm.tscn",
+		"server_path": "res://maps/server_farm.tscn"
 	},
 	2: {
 		"name": "Shipment",
