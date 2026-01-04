@@ -10,7 +10,7 @@ enum JumpType {
 }
 
 @export var destination : Marker3D  ## Where the zombie will land after jumping
-@export var trigger_radius := 2.0  ## How close zombie needs to be to trigger jump
+@export var trigger_radius := 1.0  ## How close zombie needs to be to trigger jump
 @export var jump_type := JumpType.LINEAR  ## How the zombie moves: LINEAR (walk) or JUMP (arc)
 @export var min_duration := 1.0  ## Minimum time for jump animation (seconds)
 @export var max_duration := 2.0  ## Maximum time for jump animation (seconds)
@@ -25,13 +25,34 @@ func is_within_trigger_range(zombie_position : Vector3) -> bool:
 		return false
 	if not destination:
 		return false
-	var dist := global_position.distance_to(zombie_position)
-	return dist <= trigger_radius
 
-func get_destination_position() -> Vector3:
-	if destination:
+	# Check distance to start position
+	var dist_to_start := global_position.distance_to(zombie_position)
+	if dist_to_start <= trigger_radius:
+		return true
+
+	# If bidirectional, also check distance to destination
+	if not one_way:
+		var dist_to_dest := destination.global_position.distance_to(zombie_position)
+		if dist_to_dest <= trigger_radius:
+			return true
+
+	return false
+
+func get_destination_position(zombie_position : Vector3) -> Vector3:
+	if not destination:
+		return global_position
+
+	# Return opposite end from wherever zombie is
+	var dist_to_start := global_position.distance_to(zombie_position)
+	var dist_to_dest := destination.global_position.distance_to(zombie_position)
+
+	# If closer to start, jump to destination
+	if dist_to_start < dist_to_dest:
 		return destination.global_position
-	return global_position
+	# If closer to destination, jump back to start
+	else:
+		return global_position
 
 func get_jump_duration() -> float:
 	return randf_range(min_duration, max_duration)

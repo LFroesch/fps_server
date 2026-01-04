@@ -14,6 +14,7 @@ var lobby : Lobby
 
 var direction : Vector3
 var thrower_id : int
+var effective_damage_radius : float
 
 func set_data(_lobby : Lobby, _direction : Vector3, _thrower : PlayerServerReal) -> void:
 	lobby = _lobby
@@ -25,9 +26,14 @@ func _ready() -> void:
 	if thrower:
 		add_collision_exception_with(thrower)
 	apply_central_impulse(direction * throw_impulse_strength)
-	
+
+	# Double explosion radius in zombies mode for testing
+	effective_damage_radius = damage_radius
+	if lobby.game_mode == 1:  # MapRegistry.GameMode.ZOMBIES = 1
+		effective_damage_radius *= 2.0
+
 	var explosion_area_shape := SphereShape3D.new()
-	explosion_area_shape.radius = damage_radius
+	explosion_area_shape.radius = effective_damage_radius
 	explosion_area_collision_shape.shape = explosion_area_shape
 	
 	self_destruct_timer.wait_time = lifetime
@@ -57,7 +63,7 @@ func explode() -> void:
 			var damage := max_damage - remap(
 				global_position.distance_to(player.global_position + Vector3.UP * 0.8),
 				0,
-				damage_radius,
+				effective_damage_radius,
 				0,
 				max_damage
 			)
@@ -70,7 +76,7 @@ func explode() -> void:
 			var damage := max_damage - remap(
 				distance,
 				0,
-				damage_radius,
+				effective_damage_radius,
 				0,
 				max_damage
 			)

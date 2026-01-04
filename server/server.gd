@@ -51,12 +51,10 @@ func update_lobby_spots() -> void:
 				lobby_spots[i] = lobby
 				var old_y = lobby.global_position.y
 				lobby.global_position.y = DISTANCE_BETWEEN_LOBBIES * i
-				print("[SERVER] Lobby %s assigned to slot %d (Y %.1f -> %.1f), zombies: %d" % [lobby.lobby_id, i, old_y, lobby.global_position.y, lobby.zombies.size()])
 				break
 	# Deleting unused lobby spots
 	for i in lobby_spots.size():
 		if lobby_spots[i] != null and not lobby_spots[i] in lobbies:
-			print("[SERVER] Clearing lobby spot %d" % i)
 			lobby_spots[i] = null
 
 func get_lobby_from_client_id(id : int) -> Lobby:
@@ -219,7 +217,6 @@ func s_return_server_clock_time(server_clock_time : int, old_client_clock_time :
 	pass
 
 func delete_lobby(lobby : Lobby) -> void:
-	print("%s Deleted lobby for Map: %s" % [_get_time_string(), MapRegistry.get_map_name(lobby.map_id)])
 	lobbies.erase(lobby)
 	lobby.queue_free()
 	update_lobby_spots()
@@ -254,10 +251,8 @@ func c_create_lobby(player_name: String, max_players: int, map_id: int, game_mod
 	add_child(new_lobby)
 	update_lobby_spots()
 
-	print("%s [SERVER] Created lobby %s. Total lobbies: %d" % [_get_time_string(), new_lobby.lobby_id, lobbies.size()])
 	for i in lobbies.size():
 		var lob = lobbies[i]
-		print("  Lobby %d: %s (players: %d/%d, zombies: %d)" % [i, lob.lobby_id, lob.client_data.size(), lob.max_players, lob.zombies.size()])
 
 	# Add creator as first player
 	new_lobby.add_client(client_id, player_name)
@@ -357,6 +352,12 @@ func c_kick_player(target_client_id: int) -> void:
 	s_kicked_from_lobby.rpc_id(target_client_id, "You were removed from the lobby")
 	remove_client_from_lobby(target_client_id)
 
+	# Broadcast updated lobby data to remaining players (for waiting room UI)
+	if is_instance_valid(lobby) and lobby.status == Lobby.IDLE:
+		var lobby_data = get_lobby_data(lobby)
+		for remaining_client_id in lobby.get_connected_clients():
+			s_lobby_updated.rpc_id(remaining_client_id, lobby.lobby_id, lobby_data)
+
 @rpc("authority", "call_remote", "reliable")
 func s_joined_lobby(lobby_id: String, lobby_data: Dictionary) -> void:
 	pass
@@ -377,15 +378,20 @@ func c_request_lobby_list(game_mode: int) -> void:
 	for lobby in lobbies:
 		# Only show public lobbies that are idle (not started/locked) and match game mode
 		if lobby.is_public and lobby.status == Lobby.IDLE and lobby.game_mode == game_mode and not lobby.being_deleted:
-			var player_count = lobby.client_data.keys().size()
+			# Count only connected players
+			var connected_count = 0
+			for id in lobby.client_data.keys():
+				if lobby.client_data[id].get("connected", false):
+					connected_count += 1
+
 			# Only show lobbies that aren't full
-			if player_count < lobby.max_players:
+			if connected_count < lobby.max_players:
 				lobby_list.append({
 					"lobby_id": lobby.lobby_id,
 					"map_id": lobby.map_id,
 					"map_name": MapRegistry.get_map_name(lobby.map_id),
 					"game_mode": lobby.game_mode,
-					"current_players": player_count,
+					"current_players": connected_count,
 					"max_players": lobby.max_players,
 					"host_id": lobby.host_id,
 					"host_name": lobby.client_data.get(lobby.host_id, {}).get("display_name", "Unknown")
@@ -398,13 +404,22 @@ func s_lobby_list_updated(lobbies_list: Array[Dictionary]) -> void:
 	pass
 
 func get_lobby_data(lobby: Lobby) -> Dictionary:
-	return {
+	# Filter to only include connected players
+	var connected_players := {}
+	for client_id in lobby.client_data.keys():
+		if lobby.client_data[client_id].get("connected", false):
+			connected_players[client_id] = lobby.client_data[client_id]
+
+	var data = {
 		"lobby_id": lobby.lobby_id,
 		"host_id": lobby.host_id,
 		"max_players": lobby.max_players,
-		"current_players": lobby.client_data.keys().size(),
+		"current_players": connected_players.size(),
 		"map_id": lobby.map_id,
 		"game_mode": lobby.game_mode,
 		"is_public": lobby.is_public,
-		"player_names": lobby.client_data
+		"player_names": connected_players
 	}
+
+	print("[SERVER] get_lobby_data for lobby %s: connected_players = %s" % [lobby.lobby_id, connected_players])
+	return data

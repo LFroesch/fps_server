@@ -83,6 +83,9 @@ func assign_physics_space_recursive(node: Node) -> void:
 	if node is PhysicsBody3D:
 		var body_rid = node.get_rid()
 		PhysicsServer3D.body_set_space(body_rid, physics_space_rid)
+	elif node is Area3D:
+		var area_rid = node.get_rid()
+		PhysicsServer3D.area_set_space(area_rid, physics_space_rid)
 
 	# Recursively process all children
 	for child in node.get_children():
@@ -278,6 +281,12 @@ func start_loading_map() -> void:
 				maybe_pickup.lobby = self
 				pickups.append(maybe_pickup)
 
+	# Remove static pickups in zombie mode (they should only spawn as zombie drops)
+	if game_mode == MapRegistry.GameMode.ZOMBIES:
+		for pickup in pickups:
+			pickup.queue_free()
+		pickups.clear()
+
 	for ready_client in ready_clients:
 		s_start_loading_map.rpc_id(ready_client, map_id, game_mode)
 
@@ -291,7 +300,6 @@ func setup_map_navigation(map: Node3D) -> void:
 
 	var nav_region = map.get_node_or_null("NavigationRegion3D")
 	if not nav_region:
-		push_error("[LOBBY %s] Map '%s' missing NavigationRegion3D node! AI pathfinding will not work." % [lobby_id, map.name])
 		return
 
 	# Disable to clear any auto-registration to default navigation map
@@ -307,10 +315,21 @@ func setup_map_navigation(map: Node3D) -> void:
 	# Re-enable
 	nav_region.enabled = true
 
+	# CRITICAL: Also assign all NavigationLink3D nodes to this navigation map
+	# Without this, links exist on the default map and zombies can't use them
+	_assign_navigation_links_to_map(map)
+
 	# Wait for scene tree to update transforms
 	await get_tree().physics_frame
 	await get_tree().physics_frame
 
+func _assign_navigation_links_to_map(node: Node) -> void:
+	# Recursively find all NavigationLink3D nodes and assign them to our navigation map
+	if node is NavigationLink3D:
+		NavigationServer3D.link_set_map(node.get_rid(), navigation_map_rid)
+
+	for child in node.get_children():
+		_assign_navigation_links_to_map(child)
 
 @rpc("authority", "call_remote", "reliable")
 func s_start_loading_map(map_id: int, received_game_mode: int = 0) -> void:
@@ -419,6 +438,11 @@ func spawn_server_player(client_id : int, spawn_tform : Transform3D, team : int)
 	server_player_dummy.id = client_id
 	add_child(server_player_real, true)
 	add_child(server_player_dummy, true)
+
+	# CRITICAL: Assign players to lobby's physics space (fixes grenade detection in PVP)
+	assign_physics_space_recursive(server_player_real)
+	assign_physics_space_recursive(server_player_dummy)
+
 	server_players[client_id] = {}
 	server_players[client_id].real = server_player_real
 	server_players[client_id].dummy = server_player_dummy
@@ -426,6 +450,10 @@ func spawn_server_player(client_id : int, spawn_tform : Transform3D, team : int)
 		
 @rpc("authority", "call_remote", "reliable")
 func s_spawn_player(client_id: int, spawn_tform : Transform3D, team : int, player_name : String, weapon_id : int, auto_freeze: bool):
+	pass
+
+@rpc("authority", "call_remote", "reliable")
+func s_player_weapon_changed(player_id: int, weapon_id: int) -> void:
 	pass
 
 @rpc("authority", "call_remote", "reliable")
@@ -463,14 +491,48 @@ func c_weapon_selected(weapon_id : int) -> void:
 	if not client_id in client_data.keys() or client_id in ready_clients:
 		return
 	client_data[client_id].weapon_id = weapon_id
-	
+
 	if status == GAME:
 		respawn_player(client_id)
 		return
-	
+
 	ready_clients.append(client_id)
 	waiting_players_ready = true
 	check_players_ready(start_match)
+
+@rpc("any_peer", "call_remote", "reliable")
+func c_weapon_switched(weapon_id : int) -> void:
+	var client_id := multiplayer.get_remote_sender_id()
+	if not client_id in client_data.keys():
+		return
+	client_data[client_id].weapon_id = weapon_id
+
+	# Broadcast weapon change to all other clients so they see the visual change
+	for peer_id in get_connected_clients():
+		if peer_id != client_id:
+			s_player_weapon_changed.rpc_id(peer_id, client_id, weapon_id)
+
+	print("%s Player %d switched to weapon %d" % [_get_time_string(), client_id, weapon_id])
+
+func get_player_weapon_stats(player_id: int, weapon_id: int) -> Dictionary:
+	# Get base weapon stats
+	var weapon_data = WeaponConfig.get_weapon_data(weapon_id).duplicate(true)
+
+	if not client_data.has(player_id):
+		return weapon_data
+
+	# Check if weapon is upgraded
+	var is_upgraded = false
+	if client_data[player_id].has("upgraded_weapons"):
+		is_upgraded = weapon_id in client_data[player_id].upgraded_weapons
+
+	# Apply upgrade bonuses (+33% mag, +50% reserve ammo, +25% damage)
+	if is_upgraded:
+		weapon_data["mag_size"] = int(weapon_data["mag_size"] * 1.33)
+		weapon_data["reserve_ammo"] = int(weapon_data["reserve_ammo"] * 1.5)
+		weapon_data["damage"] = int(weapon_data["damage"] * 1.25)
+
+	return weapon_data
 
 func start_match() -> void:
 	status = GAME
@@ -483,7 +545,7 @@ func start_match() -> void:
 		wave_manager.lobby = self
 		add_child(wave_manager)
 		# Start first wave after a brief delay
-		await get_tree().create_timer(3).timeout
+		await get_tree().create_timer(0.5).timeout
 		wave_manager.start_first_wave()
 
 	await get_tree().create_timer(1).timeout
@@ -589,8 +651,10 @@ func calculate_shot_results(shooter_id : int, time_stamp : int, player_data : Di
 					zombie.position = historical_local_pos  # Set LOCAL position
 					zombie.rotation.y = target_world_state.zs[zombie_id].rot_y
 
-	var weapon_data := WeaponConfig.get_weapon_data(client_data.get(shooter_id).weapon_id)
-	var space_state = get_world_3d().direct_space_state
+	# Get weapon stats with upgrades applied
+	var current_weapon_id = client_data.get(shooter_id).weapon_id
+	var weapon_data := get_player_weapon_stats(shooter_id, current_weapon_id)
+	var space_state = PhysicsServer3D.space_get_direct_state(physics_space_rid)
 	var ray_params := PhysicsRayQueryParameters3D.new()
 	var head_tform := shooter_dummy.head.global_transform
 
@@ -606,8 +670,8 @@ func calculate_shot_results(shooter_id : int, time_stamp : int, player_data : Di
 	ray_params.exclude = exclude_list
 	ray_params.collision_mask = 16 + 4 + 8 # 16 = environment_exact, 4 = hitboxes, 8 = zombies
 
-	for i in weapon_data.projectiles:
-		var rand_rot : float = deg_to_rad(randf() * (1 - weapon_data.accuracy) * 5) # 5 is the max degree of inaccuracy
+	for i in weapon_data["projectiles"]:
+		var rand_rot : float = deg_to_rad(randf() * (1 - weapon_data["accuracy"]) * 5) # 5 is the max degree of inaccuracy
 		var shoot_tform := head_tform.rotated_local(Vector3.FORWARD, randf() * PI * 2)
 		shoot_tform = shoot_tform.rotated_local(Vector3.UP, rand_rot)
 
@@ -631,6 +695,32 @@ func calculate_shot_results(shooter_id : int, time_stamp : int, player_data : Di
 			ray_params.exclude = excluded_colliders
 
 			var result := space_state.intersect_ray(ray_params)
+
+			# Shot forgiveness: if main ray misses, try offset rays in 3D sphere
+			if result.is_empty() or (result.collider is not ZombieHitbox and result.collider is not ZombieServer and result.collider is not HitBox):
+				const FORGIVENESS_RADIUS := 0.75  # 2x larger, equal in all dimensions
+				const FORGIVENESS_SAMPLES := 4
+
+				for sample_idx in FORGIVENESS_SAMPLES:
+					var angle := (TAU / FORGIVENESS_SAMPLES) * sample_idx
+					# Get perpendicular vectors in world space (not tied to ray direction)
+					var right := Vector3.RIGHT
+					var forward := Vector3.FORWARD
+
+					# Create offset with equal distribution in all dimensions
+					var offset := (right * cos(angle) + forward * sin(angle)) * FORGIVENESS_RADIUS
+					offset.y = sin(angle * 2) * FORGIVENESS_RADIUS  # Full radius for vertical
+
+					ray_params.from = ray_start + offset
+					ray_params.to = ray_start + offset + ray_direction * 100
+
+					var forgiveness_result := space_state.intersect_ray(ray_params)
+					if not forgiveness_result.is_empty():
+						# Check if we hit a valid target (zombie or player)
+						if forgiveness_result.collider is ZombieHitbox or forgiveness_result.collider is ZombieServer or forgiveness_result.collider is HitBox:
+							result = forgiveness_result
+							break
+
 			if result.is_empty():
 				break
 
@@ -642,7 +732,14 @@ func calculate_shot_results(shooter_id : int, time_stamp : int, player_data : Di
 				var zombie : ZombieServer = hitbox.zombie
 				if is_instance_valid(zombie):
 					var is_headshot : bool = hitbox.damage_multiplier > 1.5
-					var base_damage = -weapon_data.damage * hitbox.damage_multiplier * current_damage_multiplier
+					var base_damage = -weapon_data["damage"] * hitbox.damage_multiplier * current_damage_multiplier
+
+					# Apply Marksman perk (+50% headshot damage)
+					if is_headshot and client_data.has(shooter_id):
+						var shooter_perks = client_data[shooter_id].get("perks", [])
+						if "Marksman" in shooter_perks:
+							base_damage *= 1.5
+
 					var zombie_id = zombie.name.to_int()
 
 					zombie.change_health(int(base_damage), shooter_id)
@@ -659,7 +756,7 @@ func calculate_shot_results(shooter_id : int, time_stamp : int, player_data : Di
 			# Check if hit a zombie body directly (fallback)
 			elif result.collider is ZombieServer:
 				var zombie : ZombieServer = result.collider
-				var damage = -weapon_data.damage * current_damage_multiplier
+				var damage = -weapon_data["damage"] * current_damage_multiplier
 				var zombie_id = zombie.name.to_int()
 				zombie.change_health(int(damage), shooter_id)
 				update_zombie_health(zombie_id, zombie.current_health, zombie.max_health, int(damage), shooter_id, false)
@@ -676,7 +773,14 @@ func calculate_shot_results(shooter_id : int, time_stamp : int, player_data : Di
 					if client_data.get(shooter_id).team != client_data.get(hurt_client_id).team:
 						var hurt_server_player : PlayerServerReal = server_players.get(hurt_client_id).real
 						var is_headshot : bool = result.collider.damage_multiplier > 1.5
-						var base_damage = -weapon_data.damage * result.collider.damage_multiplier * current_damage_multiplier
+						var base_damage = -weapon_data["damage"] * result.collider.damage_multiplier * current_damage_multiplier
+
+						# Apply Marksman perk (+50% headshot damage)
+						if is_headshot and client_data.has(shooter_id):
+							var shooter_perks = client_data[shooter_id].get("perks", [])
+							if "Marksman" in shooter_perks:
+								base_damage *= 1.5
+
 						var damage_falloff_start := 10
 						var damage_falloff_end := 20
 						var damage_max_falloff := 0.4
@@ -808,11 +912,8 @@ func end_match() -> void:
 	match_timer.stop()
 	set_physics_process(false)
 
-	print("=== END MATCH ===")
-	print("Game mode: ", game_mode)
 	for client_id in client_data.keys():
 		var data = client_data[client_id]
-		print("Player ", client_id, " (", data.get("display_name", "?"), "): Points=", data.get("points", 0), " Kills=", data.get("kills", 0), " Deaths=", data.get("deaths", 0))
 
 	for client_id in get_connected_clients():
 		s_end_match.rpc_id(client_id, client_data, game_mode)
@@ -848,6 +949,10 @@ func c_try_throw_grenade(player_state : Dictionary) -> void:
 	
 	grenade.name = str(grenade.get_instance_id())
 	add_child(grenade, true)
+
+	# CRITICAL: Assign grenade and its children (ExplosionDamageArea) to lobby's physics space
+	assign_physics_space_recursive(grenade)
+
 	grenades[grenade.name] = grenade
 
 func update_grenades_left(client_id : int, amount : int) -> void:
@@ -892,7 +997,7 @@ func s_play_pickup_fx(pickup_type: int) -> void:
 func c_client_quit_match() -> void:
 	var client_id := multiplayer.get_remote_sender_id()
 	remove_client(client_id)
-	current_world_state.erase(client_id)
+	current_world_state.ps.erase(client_id)
 
 @rpc("any_peer", "call_remote", "reliable")
 func c_send_chat_message(message: String) -> void:
@@ -922,12 +1027,10 @@ func zombie_died(zombie_id : int, killer_id : int, zombie_type : int, death_posi
 	if game_mode != 1:  # MapRegistry.GameMode.ZOMBIES = 1
 		return
 
-	print("[LOBBY %s] Zombie %d died. Current zombie count: %d" % [lobby_id, zombie_id, zombies.size()])
 	# Remove zombie from tracking
 	if zombies.has(zombie_id):
 		zombies.get(zombie_id).queue_free()
 		zombies.erase(zombie_id)
-		print("[LOBBY %s] Zombie %d removed. New count: %d" % [lobby_id, zombie_id, zombies.size()])
 
 	# Award points to killer
 	var zombie_points := 100  # Default
@@ -939,7 +1042,6 @@ func zombie_died(zombie_id : int, killer_id : int, zombie_type : int, death_posi
 	if client_data.has(killer_id):
 		client_data[killer_id].points += zombie_points
 		client_data[killer_id].kills += 1
-		print("Zombie killed by ", killer_id, " - points: ", client_data[killer_id].points, " kills: ", client_data[killer_id].kills)
 		s_update_player_points.rpc_id(killer_id, client_data[killer_id].points)
 	else:
 		print("WARNING: Zombie killer_id ", killer_id, " not in client_data!")
@@ -971,9 +1073,24 @@ func spawn_zombie_drop(pos : Vector3, pickup_type : int) -> void:
 	pickup.lobby = self
 	pickup.is_one_time_use = true  # Zombie drops disappear after pickup
 	add_child(pickup, true)
+
+	# CRITICAL: Assign pickup's Area3D to lobby's physics space (fixes pickup detection)
+	assign_physics_space_recursive(pickup)
+
 	pickups.append(pickup)
 	for client_id in get_connected_clients():
 		s_spawn_pickup.rpc_id(client_id, pickup_name, pickup_type, pos)
+
+func award_damage_points(player_id : int, points : int) -> void:
+	if game_mode != MapRegistry.GameMode.ZOMBIES:
+		return
+
+	if not client_data.has(player_id):
+		return
+
+	client_data[player_id].points += points
+	s_update_player_points.rpc_id(player_id, client_data[player_id].points)
+	update_all_player_scores()
 
 func update_all_player_scores() -> void:
 	# Build a dictionary of all player scores
@@ -1231,16 +1348,16 @@ var weapon_costs = {
 	0: 0,       # Pistol (free starter)
 	1: 1000,    # SMG
 	2: 1500,    # Shotgun
-	3: 2000,    # Assault Rifle
-	4: 3000,    # Sniper
+	3: 3000,    # Sniper
+	4: 2000,    # Assault Rifle
 	5: 2500     # LMG
 }
 
 var ammo_costs = {
 	1: 500,     # SMG
 	2: 500,     # Shotgun
-	3: 750,     # Assault Rifle
-	4: 1000,    # Sniper
+	3: 1000,    # Sniper
+	4: 750,     # Assault Rifle
 	5: 750      # LMG
 }
 
@@ -1264,12 +1381,42 @@ var perk_costs = {
 
 var opened_doors: Dictionary = {}
 var weapon_upgrade_cost: int = 5000
+var max_weapon_upgrade_tier: int = 10  # Maximum upgrade tier (expandable)
 
 @rpc("any_peer", "call_remote", "reliable")
 func c_try_buy_weapon(weapon_id: int, is_ammo: bool = false) -> void:
 	var peer_id = multiplayer.get_remote_sender_id()
 
 	if not client_data.has(peer_id):
+		return
+
+	# Special handling for grenades (weapon_id 6)
+	if weapon_id == 6:
+		# Manually handle grenade purchase inline
+		if not server_players.has(peer_id):
+			return
+
+		const GRENADE_REFILL_COST = 500
+		var player_points = client_data[peer_id].points
+
+		if player_points < GRENADE_REFILL_COST:
+			s_purchase_failed.rpc_id(peer_id, "Not enough points!")
+			print("%s Player %d tried to buy grenades but only has %d points (needs %d)" % [_get_time_string(), peer_id, player_points, GRENADE_REFILL_COST])
+			return
+
+		# Deduct points
+		client_data[peer_id].points -= GRENADE_REFILL_COST
+
+		# Refill grenades to 5
+		var player : PlayerServerReal = server_players.get(peer_id).real
+		player.update_grenades_left(5)
+
+		# Notify client
+		s_grenades_purchased.rpc_id(peer_id)
+		s_update_player_points.rpc_id(peer_id, client_data[peer_id].points)
+		s_update_grenades_left.rpc_id(peer_id, 5)
+
+		print("%s Player %d bought grenade refill for %d points (now has %d points, 5 grenades)" % [_get_time_string(), peer_id, GRENADE_REFILL_COST, client_data[peer_id].points])
 		return
 
 	var player_points = client_data[peer_id].points
@@ -1360,26 +1507,31 @@ func c_try_upgrade_weapon(weapon_id: int) -> void:
 		print("%s Player %d tried to upgrade weapon %d but only has %d points (needs %d)" % [_get_time_string(), peer_id, weapon_id, player_points, weapon_upgrade_cost])
 		return
 
-	# Check if weapon is already upgraded
-	if not client_data[peer_id].has("upgraded_weapons"):
-		client_data[peer_id].upgraded_weapons = []
+	# Initialize upgrade tiers dictionary if needed
+	if not client_data[peer_id].has("weapon_upgrade_tiers"):
+		client_data[peer_id].weapon_upgrade_tiers = {}
 
-	if weapon_id in client_data[peer_id].upgraded_weapons:
-		s_purchase_failed.rpc_id(peer_id, "Weapon already upgraded!")
-		print("%s Player %d tried to upgrade weapon %d but it's already upgraded" % [_get_time_string(), peer_id, weapon_id])
+	# Get current tier for this weapon
+	var current_tier = client_data[peer_id].weapon_upgrade_tiers.get(weapon_id, 0)
+
+	# Check if weapon is at max upgrade tier
+	if current_tier >= max_weapon_upgrade_tier:
+		s_purchase_failed.rpc_id(peer_id, "Weapon already at max tier (%d)!" % current_tier)
+		print("%s Player %d tried to upgrade weapon %d but it's already at max tier %d" % [_get_time_string(), peer_id, weapon_id, current_tier])
 		return
 
 	# Deduct points
 	client_data[peer_id].points -= weapon_upgrade_cost
 
-	# Mark weapon as upgraded
-	client_data[peer_id].upgraded_weapons.append(weapon_id)
+	# Increment weapon tier
+	var new_tier = current_tier + 1
+	client_data[peer_id].weapon_upgrade_tiers[weapon_id] = new_tier
 
 	# Notify client
 	s_weapon_upgraded.rpc_id(peer_id, weapon_id)
 	s_update_player_points.rpc_id(peer_id, client_data[peer_id].points)
 
-	print("%s Player %d upgraded weapon %d for %d points (now has %d points)" % [_get_time_string(), peer_id, weapon_id, weapon_upgrade_cost, client_data[peer_id].points])
+	print("%s Player %d upgraded weapon %d to tier %d for %d points (now has %d points)" % [_get_time_string(), peer_id, weapon_id, new_tier, weapon_upgrade_cost, client_data[peer_id].points])
 
 @rpc("any_peer", "call_remote", "reliable")
 func c_try_buy_perk(perk_type: String) -> void:
@@ -1418,11 +1570,53 @@ func c_try_buy_perk(perk_type: String) -> void:
 	# Add perk to player
 	client_data[peer_id].perks.append(perk_type)
 
+	# Apply server-side perk effects
+	if perk_type == "TacticalVest" and server_players.has(peer_id):
+		# Heal player to full HP with new max (2x base HP = 200)
+		var player : PlayerServerReal = server_players.get(peer_id).real
+		var new_max_hp = player.get_max_health()  # Will return 200 now
+		player.current_health = new_max_hp
+		update_health(peer_id, player.current_health, new_max_hp, 0, 0, false)
+
 	# Notify client
 	s_perk_purchased.rpc_id(peer_id, perk_type)
 	s_update_player_points.rpc_id(peer_id, client_data[peer_id].points)
 
 	print("%s Player %d bought perk %s for %d points (now has %d points, %d perks)" % [_get_time_string(), peer_id, perk_type, cost, client_data[peer_id].points, client_data[peer_id].perks.size()])
+
+@rpc("any_peer", "call_remote", "reliable")
+func c_try_buy_grenades() -> void:
+	var peer_id = multiplayer.get_remote_sender_id()
+
+	if not client_data.has(peer_id):
+		return
+
+	if not server_players.has(peer_id):
+		return
+
+	# Grenade refill cost
+	const GRENADE_REFILL_COST = 500
+	var player_points = client_data[peer_id].points
+
+	# Check if player has enough points
+	if player_points < GRENADE_REFILL_COST:
+		s_purchase_failed.rpc_id(peer_id, "Not enough points!")
+		print("%s Player %d tried to buy grenades but only has %d points (needs %d)" % [_get_time_string(), peer_id, player_points, GRENADE_REFILL_COST])
+		return
+
+	# Deduct points
+	client_data[peer_id].points -= GRENADE_REFILL_COST
+
+	# Refill grenades to 5
+	var player : PlayerServerReal = server_players.get(peer_id).real
+	player.update_grenades_left(5)
+
+	# Notify client
+	s_grenades_purchased.rpc_id(peer_id)
+	s_update_player_points.rpc_id(peer_id, client_data[peer_id].points)
+	s_update_grenades_left.rpc_id(peer_id, 5)
+
+	print("%s Player %d bought grenade refill for %d points (now has %d points, 5 grenades)" % [_get_time_string(), peer_id, GRENADE_REFILL_COST, client_data[peer_id].points])
 
 @rpc("authority", "call_remote", "reliable")
 func s_weapon_purchased(weapon_id: int, is_ammo: bool) -> void:
@@ -1442,6 +1636,10 @@ func s_weapon_upgraded(weapon_id: int) -> void:
 
 @rpc("authority", "call_remote", "reliable")
 func s_perk_purchased(perk_type: String) -> void:
+	pass
+
+@rpc("authority", "call_remote", "reliable")
+func s_grenades_purchased() -> void:
 	pass
 
 # Called after door purchase - opens door on server

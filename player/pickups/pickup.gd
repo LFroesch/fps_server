@@ -26,7 +26,7 @@ func _on_body_entered(player: PlayerServerReal) -> void:
 
 	match pickup_type:
 		PickupTypes.HealthPickup:
-			if player.current_health < player.MAX_HEALTH:
+			if player.current_health < player.get_max_health():
 				player.change_health(75)
 				picked_up(player)
 		PickupTypes.GrenadePickup:

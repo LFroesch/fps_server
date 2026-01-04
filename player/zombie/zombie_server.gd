@@ -44,9 +44,8 @@ const ATTACK_RANGE := 1.5
 const DETECTION_RANGE := 200.0
 const GRAVITY := 20.0
 const ANIM_BLEND_TIME := 0.2
-const JUMP_COOLDOWN_TIME := 1.0
+const JUMP_COOLDOWN_TIME := 5.0
 const TARGET_REEVALUATION_TIME := 2.0
-const PATH_RECALC_TIME := 0.5  # Recalculate path every 0.5s
 
 var zombie_type : ZombieType = ZombieType.NORMAL
 var current_state : State = State.IDLE
@@ -65,12 +64,13 @@ var available_jump_points : Array[ZombieJumpPoint] = []
 var jump_cooldown := 0.0
 var target_reevaluation_timer := 0.0
 var path_recalc_timer := 0.0
+var path_recalc_time : float  # Randomized per zombie
 
 # Stuck detection
 var last_position := Vector3.ZERO
 var stuck_timer := 0.0
-const STUCK_TIMEOUT := 3.0  # If stuck for 3 seconds, unstuck
-const STUCK_DISTANCE_THRESHOLD := 0.5  # Must move at least 0.5m
+const STUCK_TIMEOUT := 1.0  # If stuck for 3 seconds, unstuck
+const STUCK_DISTANCE_THRESHOLD := 0.3  # Must move at least 0.5m
 var active_jump_tween : Tween = null
 
 @onready var navigation_agent : NavigationAgent3D = $NavigationAgent3D
@@ -87,6 +87,9 @@ func _ready() -> void:
 	points_value = config.points
 	attack_cooldown_time = config.attack_cooldown
 
+	# Randomize path recalc timing to prevent hivemind behavior
+	path_recalc_time = randf_range(0.3, 1.2)
+
 	# Configure CharacterBody3D for proper collision handling
 	floor_max_angle = deg_to_rad(46)  # Can walk up 46 degree slopes
 	floor_snap_length = 0.6  # Snap to floor from this distance
@@ -94,13 +97,17 @@ func _ready() -> void:
 
 	# Setup navigation agent properly
 	if navigation_agent:
-		navigation_agent.radius = 0.3  # Small enough for doorways
+		navigation_agent.radius = 0.25  # Narrow enough for 0.6-wide doorways
 		navigation_agent.height = 1.8
 		navigation_agent.path_desired_distance = 0.5
 		navigation_agent.target_desired_distance = 0.5  # Must be <= ATTACK_RANGE to prevent dead zone
 		navigation_agent.path_max_distance = 15.0  # Give up if path is this far
 		navigation_agent.path_postprocessing = NavigationPathQueryParameters3D.PATH_POSTPROCESSING_CORRIDORFUNNEL
-		navigation_agent.avoidance_enabled = false
+		navigation_agent.avoidance_enabled = true
+		navigation_agent.max_speed = speed
+		navigation_agent.neighbor_distance = 2.0  # Look for other zombies within 2m
+		navigation_agent.max_neighbors = 5  # Consider up to 5 nearby zombies
+		navigation_agent.time_horizon_agents = 0.5  # Predict collisions 0.5s ahead
 		navigation_agent.velocity_computed.connect(_on_velocity_computed)
 
 	# Setup attack timer
@@ -202,7 +209,7 @@ func _process_chase(delta: float) -> void:
 
 	# Recalculate path periodically
 	path_recalc_timer += delta
-	if path_recalc_timer >= PATH_RECALC_TIME:
+	if path_recalc_timer >= path_recalc_time:
 		path_recalc_timer = 0.0
 		# NavigationAgent3D works in GLOBAL space
 		navigation_agent.target_position = target_player.global_position
@@ -213,11 +220,11 @@ func _process_chase(delta: float) -> void:
 		if jump_cooldown <= 0 and not available_jump_points.is_empty():
 			check_and_use_jump_points()
 		else:
-			# Fall back to direct movement
+			# Fall back to direct movement with avoidance
 			var direction = (target_player.global_position - global_position).normalized()
 			direction.y = 0
-			velocity.x = direction.x * speed
-			velocity.z = direction.z * speed
+			var desired_velocity = direction * speed
+			navigation_agent.set_velocity(desired_velocity)
 			if direction.length() > 0.1:
 				look_at(global_position + direction, Vector3.UP)
 		return
@@ -230,9 +237,9 @@ func _process_chase(delta: float) -> void:
 		var direction = (next_position - global_position).normalized()
 		direction.y = 0
 
-		# Set velocity directly
-		velocity.x = direction.x * speed
-		velocity.z = direction.z * speed
+		# Set desired velocity for avoidance system
+		var desired_velocity = direction * speed
+		navigation_agent.set_velocity(desired_velocity)
 
 		# Face the movement direction
 		if direction.length() > 0.1:
@@ -243,8 +250,9 @@ func _process_chase(delta: float) -> void:
 		velocity.z = 0
 
 func _on_velocity_computed(safe_velocity: Vector3) -> void:
-	# Not using avoidance velocity for now - simpler is better
-	pass
+	# Apply collision-avoided velocity from navigation system
+	velocity.x = safe_velocity.x
+	velocity.z = safe_velocity.z
 
 func _process_attack(delta: float) -> void:
 	# Check if target is still valid and alive
@@ -347,6 +355,13 @@ func change_health(amount : int, maybe_damage_dealer : int = 0) -> void:
 
 	current_health = clampi(current_health + amount, 0, max_health)
 
+	# Award points for damage dealt (5 damage = 1 point)
+	if amount < 0 and maybe_damage_dealer != 0 and lobby:
+		var damage_dealt = abs(amount)
+		var points_earned = floori(damage_dealt / 5.0)
+		if points_earned > 0:
+			lobby.award_damage_points(maybe_damage_dealer, points_earned)
+
 	if current_health <= 0 and current_state != State.DEAD:
 		die(maybe_damage_dealer)
 
@@ -400,33 +415,35 @@ func check_and_use_jump_points() -> void:
 	if not target_player or available_jump_points.is_empty():
 		return
 
-	# Find best jump point
+	# Find best jump point (closest to trigger)
 	var best_jump_point : ZombieJumpPoint = null
-	var best_distance_reduction := 0.0
+	var best_distance_to_jump := INF
 
 	for jump_point in available_jump_points:
 		if not is_instance_valid(jump_point):
 			continue
+
 		if not jump_point.is_within_trigger_range(global_position):
 			continue
 
-		# Check if jump gets us closer to target
-		var current_dist := global_position.distance_to(target_player.global_position)
-		var after_jump_dist := jump_point.get_destination_position().distance_to(target_player.global_position)
-		var distance_reduction := current_dist - after_jump_dist
-
-		if distance_reduction > best_distance_reduction:
-			best_distance_reduction = distance_reduction
+		# Pick closest jump point if multiple in range
+		var dist_to_jump := global_position.distance_to(jump_point.global_position)
+		if dist_to_jump < best_distance_to_jump:
+			best_distance_to_jump = dist_to_jump
 			best_jump_point = jump_point
 
-	# Use jump point if it saves at least 1 meter
-	if best_jump_point and best_distance_reduction > 1.0:
+	# Execute jump if any valid point found (trust level design)
+	if best_jump_point:
+		var dest = best_jump_point.get_destination_position(global_position)
 		execute_jump(best_jump_point)
 
 func execute_jump(jump_point: ZombieJumpPoint) -> void:
 	# Cancel any existing jump tween
 	if active_jump_tween:
-		active_jump_tween.kill()
+		var old_tween = active_jump_tween
+		active_jump_tween = null  # Clear reference BEFORE killing so callback knows it's replaced
+		old_tween.kill()
+		print("  Killed existing tween")
 
 	# Enter jumping state
 	var previous_state := current_state
@@ -434,8 +451,12 @@ func execute_jump(jump_point: ZombieJumpPoint) -> void:
 	velocity = Vector3.ZERO
 	jump_cooldown = JUMP_COOLDOWN_TIME
 
+	# Disable avoidance during jump to prevent interference
+	if navigation_agent:
+		navigation_agent.avoidance_enabled = false
+
 	var start_pos := global_position
-	var end_pos := jump_point.get_destination_position()
+	var end_pos := jump_point.get_destination_position(global_position)
 	var duration := jump_point.get_jump_duration()
 
 	# Create tween
@@ -463,9 +484,17 @@ func execute_jump(jump_point: ZombieJumpPoint) -> void:
 		active_jump_tween.tween_property(self, "global_position", end_pos, duration * 0.5)
 
 	# When jump completes, return to previous state
+	var this_tween = active_jump_tween  # Capture reference
 	active_jump_tween.finished.connect(func():
-		current_state = previous_state
-		active_jump_tween = null
+		# Only reset if THIS tween is still active (not killed by new jump)
+		if active_jump_tween == this_tween:
+			current_state = previous_state
+			active_jump_tween = null
+			# Re-enable avoidance after jump
+			if navigation_agent:
+				navigation_agent.avoidance_enabled = true
+		else:
+			print("  Old tween finished but was replaced, ignoring")
 	)
 
 func _try_step_up() -> void:
@@ -522,6 +551,6 @@ func unstuck() -> void:
 	# Strategy 3: Reset state
 	current_state = State.IDLE
 	velocity = Vector3.ZERO
-	
+
 	# Force immediate path recalculation
-	path_recalc_timer = PATH_RECALC_TIME
+	path_recalc_timer = path_recalc_time

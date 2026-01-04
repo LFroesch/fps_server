@@ -3,8 +3,8 @@ class_name WaveManager
 
 const BASE_ZOMBIE_COUNT := 5
 const ZOMBIES_PER_WAVE := 3
-const WAVE_BREAK_TIME := 10.0  # 10 seconds between waves
-const SPAWN_INTERVAL := 2.0  # 2 seconds between individual zombie spawns
+const WAVE_BREAK_TIME := 1.0  # 1 second between waves (debug: was 10.0)
+const SPAWN_INTERVAL := 0.3  # 0.3 seconds between individual zombie spawns (debug: was 2.0)
 
 var lobby : Lobby
 var current_wave := 0
@@ -15,6 +15,7 @@ var spawn_points : Array[Node3D] = []
 
 var spawn_timer : Timer
 var break_timer : Timer
+var current_spawn_index := 0  # Track which spawn point to use next
 
 func _ready() -> void:
 	# Create timers
@@ -42,12 +43,9 @@ func collect_spawn_points() -> void:
 
 	# If no zombie spawn points, use Red team spawns (since players are on Blue/Team 0)
 	if spawn_points.is_empty():
-		print("WaveManager: No zombie spawn points found, using Red team spawns")
 		for spawn_point in lobby.spawn_points:
 			if spawn_point.name.begins_with("Red"):
 				spawn_points.append(spawn_point)
-
-	print("WaveManager: Using %d spawn points for zombies" % spawn_points.size())
 
 func start_first_wave() -> void:
 	current_wave = 0
@@ -58,8 +56,6 @@ func start_next_wave() -> void:
 	zombies_to_spawn = BASE_ZOMBIE_COUNT + (current_wave - 1) * ZOMBIES_PER_WAVE
 	zombies_remaining = zombies_to_spawn
 	is_wave_active = true
-
-	print("WaveManager: Starting wave %d with %d zombies" % [current_wave, zombies_to_spawn])
 
 	# Notify all clients about new wave
 	for client_id in lobby.get_connected_clients():
@@ -85,11 +81,11 @@ func _on_spawn_timer_timeout() -> void:
 
 func spawn_zombie() -> void:
 	if spawn_points.is_empty():
-		print("WaveManager: No spawn points available!")
 		return
 
-	# Pick random spawn point
-	var spawn_point = spawn_points.pick_random()
+	# Use round-robin spawn point selection to spread out zombies
+	var spawn_point = spawn_points[current_spawn_index % spawn_points.size()]
+	current_spawn_index += 1
 
 	# Determine zombie type based on wave
 	var zombie_type := determine_zombie_type()
@@ -104,11 +100,13 @@ func spawn_zombie() -> void:
 	zombie.name = str(zombie_id)
 
 	lobby.add_child(zombie, true)
-	zombie.global_position = spawn_point.global_position
+	# Add random offset to prevent collision (especially important with fast spawns)
+	# Zombie radius is ~0.25, so offset by 1.5 units ensures no overlap
+	var spawn_offset = Vector3(randf_range(-1.5, 1.5), 0, randf_range(-1.5, 1.5))
+	zombie.global_position = spawn_point.global_position + spawn_offset
 
-	# CRITICAL: Assign zombie to lobby's physics space
-	if lobby.physics_space_rid.is_valid():
-		PhysicsServer3D.body_set_space(zombie.get_rid(), lobby.physics_space_rid)
+	# CRITICAL: Assign zombie AND child hitboxes (Area3D) to lobby's physics space
+	lobby.assign_physics_space_recursive(zombie)
 
 	lobby.zombies[zombie_id] = zombie
 
@@ -149,7 +147,6 @@ func on_zombie_killed() -> void:
 
 func complete_wave() -> void:
 	is_wave_active = false
-	print("WaveManager: Wave %d complete! Break for %d seconds" % [current_wave, WAVE_BREAK_TIME])
 
 	# Notify clients of wave completion and break time
 	for client_id in lobby.get_connected_clients():
