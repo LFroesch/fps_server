@@ -357,7 +357,7 @@ func change_health(amount : int, maybe_damage_dealer : int = 0) -> void:
 
 	# Award points for damage dealt (5 damage = 1 point)
 	if amount < 0 and maybe_damage_dealer != 0 and lobby:
-		var damage_dealt = abs(amount)
+		var damage_dealt = mini(abs(amount), max_health)  # Cap to max health to prevent insta-kill exploits
 		var points_earned = floori(damage_dealt / 5.0)
 		if points_earned > 0:
 			lobby.award_damage_points(maybe_damage_dealer, points_earned)

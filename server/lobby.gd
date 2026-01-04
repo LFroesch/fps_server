@@ -10,6 +10,20 @@ const DEATH_COOLDOWN_LENGTH := 2
 const MATCH_LENGTH_SEC := 300
 const TEAM_SCORE_TO_WIN := 5
 
+# Zombie Drop Table - Centralized for easy tuning
+# Total drop chance: ~17% (roughly 1 in 6 zombies)
+const ZOMBIE_DROP_TABLE := [
+	{"name": "max_ammo",      "chance": 0.07,  "pickup_type": 2},  # 7% - Most common (essential)
+	{"name": "double_points", "chance": 0.05,  "pickup_type": 5},  # 5% - Common (progression boost)
+	{"name": "health",        "chance": 0.03,  "pickup_type": 0},  # 3% - Moderate (survival)
+	{"name": "insta_kill",    "chance": 0.015, "pickup_type": 4},  # 1.5% - Rare (powerful)
+	{"name": "nuke",          "chance": 0.005, "pickup_type": 6}   # 0.5% - Very rare (screen clear)
+]
+
+# Power-up durations
+const POWERUP_DURATION := 30.0  # Insta-Kill, Double Points
+const POWERUP_DESPAWN_TIME := 30.0  # How long before uncollected power-ups disappear
+
 enum {
 	IDLE,
 	DELETING,
@@ -42,6 +56,9 @@ var zombies := {}  # For zombies mode
 var wave_manager = null  # WaveManager instance for zombies mode
 var next_zombie_id := 0  # Unique zombie ID counter per lobby
 var navigation_map_rid : RID  # Unique navigation map for this lobby's zombies
+
+# Power-up state tracking (zombies mode)
+var active_powerups := {}  # {"insta_kill": Timer, "double_points": Timer}
 
 var match_time_left := MATCH_LENGTH_SEC
 var match_timer := Timer.new()
@@ -521,16 +538,21 @@ func get_player_weapon_stats(player_id: int, weapon_id: int) -> Dictionary:
 	if not client_data.has(player_id):
 		return weapon_data
 
-	# Check if weapon is upgraded
-	var is_upgraded = false
-	if client_data[player_id].has("upgraded_weapons"):
-		is_upgraded = weapon_id in client_data[player_id].upgraded_weapons
+	# Get weapon upgrade tier
+	var upgrade_tier = 0
+	if client_data[player_id].has("weapon_upgrade_tiers"):
+		upgrade_tier = client_data[player_id].weapon_upgrade_tiers.get(weapon_id, 0)
 
-	# Apply upgrade bonuses (+33% mag, +50% reserve ammo, +25% damage)
-	if is_upgraded:
-		weapon_data["mag_size"] = int(weapon_data["mag_size"] * 1.33)
-		weapon_data["reserve_ammo"] = int(weapon_data["reserve_ammo"] * 1.5)
-		weapon_data["damage"] = int(weapon_data["damage"] * 1.25)
+	# Apply tier-based upgrade bonuses (additive per tier)
+	# Each tier: +33% mag, +50% reserve ammo, +25% damage
+	if upgrade_tier > 0:
+		var mag_multiplier = 1.0 + (upgrade_tier * 0.33)
+		var reserve_multiplier = 1.0 + (upgrade_tier * 0.5)
+		var damage_multiplier = 1.0 + (upgrade_tier * 0.25)
+
+		weapon_data["mag_size"] = int(weapon_data["mag_size"] * mag_multiplier)
+		weapon_data["reserve_ammo"] = int(weapon_data["reserve_ammo"] * reserve_multiplier)
+		weapon_data["damage"] = int(weapon_data["damage"] * damage_multiplier)
 
 	return weapon_data
 
@@ -688,6 +710,8 @@ func calculate_shot_results(shooter_id : int, time_stamp : int, player_data : Di
 			excluded_colliders.append(shooter_real.get_rid())
 		var ray_start := ray_params.from
 		var ray_direction := shoot_tform.basis.z * -1
+		var initial_ray_start := ray_start  # Track starting position for trail
+		var final_hit_pos := ray_start + ray_direction * 100  # Default to max range
 
 		while penetrations_done <= max_penetrations:
 			ray_params.from = ray_start
@@ -725,6 +749,7 @@ func calculate_shot_results(shooter_id : int, time_stamp : int, player_data : Di
 				break
 
 			var hit_something := false
+			final_hit_pos = result.position  # Update final hit position
 
 			# Check if hit a zombie hitbox (head or body)
 			if result.collider is ZombieHitbox:
@@ -733,6 +758,10 @@ func calculate_shot_results(shooter_id : int, time_stamp : int, player_data : Di
 				if is_instance_valid(zombie):
 					var is_headshot : bool = hitbox.damage_multiplier > 1.5
 					var base_damage = -weapon_data["damage"] * hitbox.damage_multiplier * current_damage_multiplier
+
+					# Apply Insta-Kill power-up (instant kill)
+					if is_powerup_active("insta_kill"):
+						base_damage = -9999  # Guaranteed kill
 
 					# Apply Marksman perk (+50% headshot damage)
 					if is_headshot and client_data.has(shooter_id):
@@ -757,6 +786,11 @@ func calculate_shot_results(shooter_id : int, time_stamp : int, player_data : Di
 			elif result.collider is ZombieServer:
 				var zombie : ZombieServer = result.collider
 				var damage = -weapon_data["damage"] * current_damage_multiplier
+
+				# Apply Insta-Kill power-up (instant kill)
+				if is_powerup_active("insta_kill"):
+					damage = -9999  # Guaranteed kill
+
 				var zombie_id = zombie.name.to_int()
 				zombie.change_health(int(damage), shooter_id)
 				update_zombie_health(zombie_id, zombie.current_health, zombie.max_health, int(damage), shooter_id, false)
@@ -806,6 +840,9 @@ func calculate_shot_results(shooter_id : int, time_stamp : int, player_data : Di
 			else:
 				break
 
+		# Spawn bullet trail for upgraded weapons (from muzzle to final hit/max range)
+		spawn_bullet_trail(shooter_id, initial_ray_start, final_hit_pos)
+
 	# RESTORE ZOMBIE POSITIONS after raycasting
 	for zombie_id in zombie_original_states.keys():
 		if zombies.has(zombie_id):
@@ -821,6 +858,34 @@ func spawn_bullet_hit_fx(pos: Vector3, normal : Vector3, type: int) -> void:
 		
 @rpc("authority", "call_remote", "unreliable")
 func s_spawn_bullet_hit_fx(pos: Vector3, normal : Vector3, type: int) -> void:
+	pass
+
+func spawn_bullet_trail(shooter_id: int, from_pos: Vector3, to_pos: Vector3) -> void:
+	# Get shooter's current weapon and upgrade tier
+	if not client_data.has(shooter_id):
+		return
+
+	var weapon_id = client_data[shooter_id].weapon_id
+	var upgrade_tier = 0
+
+	if client_data[shooter_id].has("weapon_upgrade_tiers"):
+		upgrade_tier = client_data[shooter_id].weapon_upgrade_tiers.get(weapon_id, 0)
+
+	# Only spawn trails for upgraded weapons
+	if upgrade_tier > 0:
+		# Offset the trail start position forward from camera/head to make it more visible
+		# Without this, the trail spawns too close to the camera and is hard to see
+		const TRAIL_START_OFFSET = 1.5  # Meters forward from head position
+		const TRAIL_Y_OFFSET = -0.3  # Drop trail down slightly to avoid blocking view
+		var shoot_direction = (to_pos - from_pos).normalized()
+		var offset_from_pos = from_pos + (shoot_direction * TRAIL_START_OFFSET)
+		offset_from_pos.y += TRAIL_Y_OFFSET  # Drop it down
+
+		for client_id in get_connected_clients():
+			s_spawn_bullet_trail.rpc_id(client_id, offset_from_pos, to_pos, weapon_id, upgrade_tier)
+
+@rpc("authority", "call_remote", "unreliable")
+func s_spawn_bullet_trail(from_pos: Vector3, to_pos: Vector3, weapon_id: int, upgrade_tier: int) -> void:
 	pass
 
 @rpc("authority", "call_remote", "unreliable")
@@ -1039,6 +1104,10 @@ func zombie_died(zombie_id : int, killer_id : int, zombie_type : int, death_posi
 		1: zombie_points = 150  # Fast
 		2: zombie_points = 200  # Tank
 
+	# Apply Double Points power-up (2x multiplier)
+	if is_powerup_active("double_points"):
+		zombie_points *= 2
+
 	if client_data.has(killer_id):
 		client_data[killer_id].points += zombie_points
 		client_data[killer_id].kills += 1
@@ -1049,12 +1118,15 @@ func zombie_died(zombie_id : int, killer_id : int, zombie_type : int, death_posi
 		# Broadcast all player scores to all clients (for teammate cards)
 		update_all_player_scores()
 
-	# Random chance to spawn pickup
-	var rand_val = randf()
-	if rand_val < 0.3:  # 30% health
-		spawn_zombie_drop(death_position, 0)  # Health
-	elif rand_val < 0.6:  # 30% ammo
-		spawn_zombie_drop(death_position, 2)  # Ammo
+	# Random chance to spawn pickup using weighted drop table
+	var roll = randf() + (zombie_id * 0.00001)  # Add tiny offset based on zombie_id to prevent dupes
+	roll = fmod(roll, 1.0)  # Wrap back to 0-1 range
+	var cumulative_chance = 0.0
+	for drop_entry in ZOMBIE_DROP_TABLE:
+		cumulative_chance += drop_entry.chance
+		if roll < cumulative_chance:
+			spawn_zombie_drop(death_position, drop_entry.pickup_type)
+			break
 
 	# Notify wave manager
 	if wave_manager:
@@ -1072,6 +1144,7 @@ func spawn_zombie_drop(pos : Vector3, pickup_type : int) -> void:
 	pickup.pickup_type = pickup_type
 	pickup.lobby = self
 	pickup.is_one_time_use = true  # Zombie drops disappear after pickup
+	pickup.should_despawn = true  # Power-ups despawn after 30s
 	add_child(pickup, true)
 
 	# CRITICAL: Assign pickup's Area3D to lobby's physics space (fixes pickup detection)
@@ -1080,6 +1153,86 @@ func spawn_zombie_drop(pos : Vector3, pickup_type : int) -> void:
 	pickups.append(pickup)
 	for client_id in get_connected_clients():
 		s_spawn_pickup.rpc_id(client_id, pickup_name, pickup_type, pos)
+
+func activate_max_ammo() -> void:
+	# Refill all players' weapons and grenades
+	for player_data in server_players.values():
+		var player : PlayerServerReal = player_data.real
+		if is_instance_valid(player):
+			replenish_ammo(player.name.to_int())
+			# Refill grenades to max (2)
+			player.update_grenades_left(2)
+
+	# Notify all clients with visual/audio effect
+	for client_id in get_connected_clients():
+		s_powerup_collected.rpc_id(client_id, "max_ammo")
+
+func activate_powerup(powerup_name : String, collector_id : int) -> void:
+	# Create or refresh timer for timed power-up
+	if active_powerups.has(powerup_name):
+		# Refresh duration if already active
+		var timer : Timer = active_powerups[powerup_name]
+		timer.start(POWERUP_DURATION)
+	else:
+		# Create new timer
+		var timer = Timer.new()
+		timer.wait_time = POWERUP_DURATION
+		timer.one_shot = true
+		timer.timeout.connect(func(): _on_powerup_expired(powerup_name))
+		add_child(timer)
+		timer.start()
+		active_powerups[powerup_name] = timer
+
+	# Notify all clients
+	for client_id in get_connected_clients():
+		s_powerup_activated.rpc_id(client_id, powerup_name, POWERUP_DURATION)
+
+func activate_nuke(collector_id : int) -> void:
+	const NUKE_POINTS = 50  # Reduced points per zombie
+	var zombies_killed = 0
+
+	# Kill all active zombies (need to iterate over keys to avoid modification during iteration)
+	var zombie_ids = zombies.keys()
+	for zombie_id in zombie_ids:
+		if zombies.has(zombie_id):
+			var zombie = zombies[zombie_id]
+			if is_instance_valid(zombie):
+				# Notify all clients this zombie died
+				for client_id in get_connected_clients():
+					s_zombie_died.rpc_id(client_id, zombie_id)
+
+				zombie.queue_free()
+				zombies.erase(zombie_id)
+				zombies_killed += 1
+
+	# Award points to collector
+	if client_data.has(collector_id):
+		var points_awarded = zombies_killed * NUKE_POINTS
+		client_data[collector_id].points += points_awarded
+		s_update_player_points.rpc_id(collector_id, client_data[collector_id].points)
+		update_all_player_scores()
+
+	# Update wave manager
+	if wave_manager:
+		for i in zombies_killed:
+			wave_manager.on_zombie_killed()
+
+	# Notify all clients
+	for client_id in get_connected_clients():
+		s_powerup_collected.rpc_id(client_id, "nuke")
+
+func _on_powerup_expired(powerup_name : String) -> void:
+	if active_powerups.has(powerup_name):
+		var timer : Timer = active_powerups[powerup_name]
+		timer.queue_free()
+		active_powerups.erase(powerup_name)
+
+	# Notify all clients
+	for client_id in get_connected_clients():
+		s_powerup_expired.rpc_id(client_id, powerup_name)
+
+func is_powerup_active(powerup_name : String) -> bool:
+	return active_powerups.has(powerup_name)
 
 func award_damage_points(player_id : int, points : int) -> void:
 	if game_mode != MapRegistry.GameMode.ZOMBIES:
@@ -1309,6 +1462,22 @@ func s_zombie_died(zombie_id : int) -> void:
 
 @rpc("authority", "call_remote", "reliable")
 func s_update_player_points(points : int) -> void:
+	pass
+
+@rpc("authority", "call_remote", "reliable")
+func s_powerup_collected(powerup_name : String) -> void:
+	pass
+
+@rpc("authority", "call_remote", "reliable")
+func s_powerup_activated(powerup_name : String, duration : float) -> void:
+	pass
+
+@rpc("authority", "call_remote", "reliable")
+func s_powerup_expired(powerup_name : String) -> void:
+	pass
+
+@rpc("authority", "call_remote", "reliable")
+func s_pickup_despawn_started(pickup_name : String, despawn_time : float) -> void:
 	pass
 
 @rpc("authority", "call_remote", "reliable")
